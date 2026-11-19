@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DWLE — Dynamic Window & Level Encoding</title>
+  <style>
+    :root {
+      --bg: #0b1020;
+      --card: #131b33;
+      --card-2: #192444;
+      --text: #eef2ff;
+      --muted: #9fb0d9;
+      --accent: #38bdf8;
+      --accent-2: #34d399;
+      --border: #25345e;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.65;
+      padding: 20px;
+    }
+    .container { max-width: 980px; margin: 0 auto; }
+    header {
+      background: linear-gradient(135deg, #162244, #0f172a);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 28px;
+      margin-bottom: 24px;
+    }
+    .badge {
+      display: inline-block;
+      background: rgba(56, 189, 248, 0.15);
+      color: var(--accent);
+      border: 1px solid rgba(56, 189, 248, 0.35);
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 0.85rem;
+      margin-bottom: 12px;
+    }
+    h1 { font-size: 1.9rem; margin-bottom: 8px; }
+    h2 { font-size: 1.35rem; margin-bottom: 14px; color: var(--accent); }
+    p { color: var(--muted); margin-bottom: 12px; }
+    section {
+      background: var(--card);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 22px;
+      margin-bottom: 22px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 14px;
+    }
+    .stat {
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+    }
+    .stat strong { display: block; font-size: 1.4rem; color: var(--accent-2); }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 8px;
+      font-size: 0.92rem;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 10px 12px;
+      text-align: left;
+    }
+    th { background: var(--card-2); color: var(--text); }
+    td { color: var(--muted); }
+    pre, textarea, input {
+      width: 100%;
+      background: #090e1c;
+      color: #e2e8f0;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 12px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.9rem;
+    }
+    textarea { min-height: 90px; margin-bottom: 12px; }
+    button {
+      background: var(--accent);
+      color: #061021;
+      border: none;
+      border-radius: 10px;
+      padding: 10px 18px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { opacity: 0.92; }
+    .out-box {
+      margin-top: 14px;
+      background: var(--card-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+      color: var(--text);
+    }
+    footer {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.88rem;
+      padding: 12px 0 24px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <span class="badge">Original Bit-Level Encoding & Compression Protocol</span>
+      <h1>DWLE — Dynamic Window &amp; Level Encoding</h1>
+      <p>
+        Ek stateful bit-stream protocol jisme active window bit-width (2<sup>n</sup>) aur nested levels (L1..Ln)
+        bhasha aur character density ke hisab se badalte hain taaki UTF-8 ke muqable kam bits mein text encode ho sake.
+      </p>
+    </header>
+
+    <section>
+      <h2>Core Token Rules (Har Window Mein)</h2>
+      <div class="grid-3">
+        <div class="stat">
+          <strong>Value = 0 (Null)</strong>
+          <span>Window bit-width badalne ka trigger; agla token nayi window width (value - 10) batata hai.</span>
+        </div>
+        <div class="stat">
+          <strong>Value = 1..10 (Nested)</strong>
+          <span>Bina window width badle Level switch/chain (value - 1); 0-escape se bade level numbers.</span>
+        </div>
+        <div class="stat">
+          <strong>Value &ge; 11 (Data)</strong>
+          <span>Active (Window, Level) table ka character index (value - 10).</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Window Capacity Map (2<sup>n</sup> - 11)</h2>
+      <div style="overflow-x:auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>Window</th>
+              <th>Bit Width</th>
+              <th>Usable Slots (2<sup>n</sup> - 11)</th>
+              <th>Role / Script Set</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr><td><strong>W8</strong></td><td>8-bit</td><td>245</td><td>Default start &amp; pure ASCII (0 overhead)</td></tr>
+            <tr><td><strong>W9</strong></td><td>9-bit</td><td>501</td><td>Devanagari / Barakhadi + common marks</td></tr>
+            <tr><td><strong>W10</strong></td><td>10-bit</td><td>1,013</td><td>Hybrid Hindi + ASCII + common emojis/symbols</td></tr>
+            <tr><td><strong>W11</strong></td><td>11-bit</td><td>2,037</td><td>Emojis &amp; symbols</td></tr>
+            <tr><td><strong>W17</strong></td><td>17-bit</td><td>131,061</td><td>Han / CJK characters + free slots for symbols</td></tr>
+            <tr><td><strong>W21</strong></td><td>21-bit</td><td>2,097,141</td><td>Universal Unicode fallback</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section>
+      <h2>Live Bit Estimator (UTF-8 vs DWLE Window Estimate)</h2>
+      <p>Yahan koi bhi text likh kar UTF-8 aur estimated DWLE bit usage compare karo:</p>
+      <textarea id="sampleText" placeholder="Yahan Hindi, English, ya Chinese text likho...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
+      <button onclick="estimateBits()">Bits Calculate Karo</button>
+      <div class="out-box" id="resultBox">Upar "Bits Calculate Karo" par click karo.</div>
+    </section>
+
+    <section>
+      <h2>Visual Flow: W8 &rarr; W9 &rarr; W8</h2>
+      <pre>W8 (8-bit):  [00001011 = A] -> [00000000 = NULL] -> [00010011 = wcode 9]
+W9 (9-bit):  [000001011 = क] -> [000000000 = NULL] -> [000010010 = wcode 8]
+W8 (8-bit):  [00001011 = A]</pre>
+    </section>
+
+    <footer>
+      DWLE Project Showcase &bull; Built for GitHub &amp; GitHub Pages
+    </footer>
+  </div>
+
+  <script>
+    function estimateBits() {
+      const text = document.getElementById("sampleText").value || "";
+      const utf8Bytes = new TextEncoder().encode(text).length;
+      const utf8Bits = utf8Bytes * 8;
+
+      let dwleBits = 0;
+      let curW = 8;
+
+      for (const ch of text) {
+        const cp = ch.codePointAt(0);
+        let targetW = 21;
+        if (cp <= 0x7f) targetW = 8;
+        else if (cp >= 0x0900 && cp <= 0x097f) targetW = 10;
+        else if (cp >= 0x1f300 && cp <= 0x1faff) targetW = 11;
+        else if (cp >= 0x4e00 && cp <= 0x9fff) targetW = 17;
+
+        if (targetW !== curW) {
+          dwleBits += curW * 2; // null + wcode in current width
+          curW = targetW;
+        }
+        dwleBits += curW;
+      }
+
+      const diff = utf8Bits - dwleBits;
+      const pct = utf8Bits > 0 ? ((diff / utf8Bits) * 100).toFixed(2) : "0.00";
+
+      document.getElementById("resultBox").innerHTML =
+        `<strong>Characters:</strong> ${[...text].length} | ` +
+        `<strong>UTF-8:</strong> ${utf8Bits} bits | ` +
+        `<strong>DWLE (est.):</strong> ${dwleBits} bits | ` +
+        `<strong>Bachat:</strong> ${pct}% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
+    }
+    estimateBits();
+  </script>
+</body>
+</html>
+
