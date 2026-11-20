@@ -450,10 +450,10 @@ W8 (8-bit):  [00001011 = A]</pre>
         const cp = decodeWindowOffset(offset, curW);
         let ch = "?";
         try { ch = String.fromCodePoint(cp); } catch (_) {}
-        lines.push(`${chunk}  [${curW}w:${ch}]`); idx += curW; } binBox.value = lines.join("\n"); }  function estimateBits() { const sampleEl = document.getElementById("sampleText"); const text = sampleEl ? (sampleEl.value ert{}ert{} "") : ""; const utf8Bytes = new TextEncoder().encode(text).length; const utf8Bits = utf8Bytes * 8; const dwle = computeDwleStream(text); const dwleBits = dwle.totalBits; const dwleBytes = Math.ceil(dwleBits / 8);  const diff = utf8Bits - dwleBits; const pct = utf8Bits > 0 ? ((diff / utf8Bits) * 100).toFixed(2) : "0.00";  const resEl = document.getElementById("resultBox"); if (resEl) { resEl.innerHTML = `<strong>Characters:</strong> ${[...text].length} | ` +
+        lines.push(`${chunk}  [${curW}w:${ch}]`); idx += curW; } binBox.value = lines.join("\n"); }  function estimateBits() { const sampleEl = document.getElementById("sampleText"); const text = sampleEl ? (sampleEl.value || "") : ""; const utf8Bytes = new TextEncoder().encode(text).length; const utf8Bits = utf8Bytes * 8; const dwle = computeDwleStream(text); const dwleBits = dwle.totalBits; const dwleBytes = Math.ceil(dwleBits / 8);  const diff = utf8Bits - dwleBits; const pct = utf8Bits > 0 ? ((diff / utf8Bits) * 100).toFixed(2) : "0.00";  const resEl = document.getElementById("resultBox"); if (resEl) { resEl.innerHTML = `<strong>Characters:</strong> ${[...text].length} | ` +
           `<strong>UTF-8:</strong> ${utf8Bytes} B (${utf8Bits} bits) | ` +
           `<strong>DWLE:</strong> ${dwleBytes} B (${dwleBits} bits) | ` +
-          `<strong>Bachat:</strong> ${pct}\% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
+          `<strong>Bachat:</strong> ${pct}% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
       }
 
       const flowEl = document.getElementById("visualFlowBox");
