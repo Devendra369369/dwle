@@ -177,6 +177,12 @@
 
     <section>
       <h2>Live Bit Estimator &amp; File Exporter (UTF-8 vs DWLE)</h2>
+      <p>Binary Composer (upar): Character composer se live <code>01</code> bit-stream banta hai, ya yahan <code>0</code>/<code>1</code> likh/paste karke neeche decode karo:</p>
+      <textarea id="binaryText" rows="3" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" placeholder="Yahan 0101... binary bits likho ya paste karo..."></textarea>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+        <button type="button" onclick="decodeBinaryToText()" style="background:#0369a1; color:#f8fafc;">Decode 01 to Text</button>
+        <button type="button" onclick="copyBinaryStream()" style="background:#334155; color:#f8fafc;">Copy 01</button>
+      </div>
       <p>Yahan 1 KB ya usse bada koi bhi text likho, compress/calculate karo, aur Unicode (UTF-8) ya DWLE file download karo:</p>
       <textarea id="sampleText" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" oninput="estimateBits()" placeholder="Yahan Hindi, English, ya mixed text likho (1 KB se bada bhi chalega)...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
       <div class="out-box" id="resultBox" style="margin-bottom:12px;">Upar "Compress &amp; Calculate" par click karo.</div>
@@ -297,6 +303,71 @@ W8 (8-bit):  [00001011 = A]</pre>
         `<strong>Bachat:</strong> ${pct}% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
 
       document.getElementById("visualFlowBox").textContent = dwle.flowLines.join("\n");
+      const binBox = document.getElementById("binaryText");
+      if (binBox && document.activeElement !== binBox) {
+        binBox.value = dwle.bits.join("");
+      }
+    }
+
+    function mapBitsToChars(bitStr) {
+      const clean = (bitStr || "").replace(/[^01]/g, "");
+      if (!clean) return "";
+      let curW = 8;
+      let idx = 0;
+      const out = [];
+      while (idx < clean.length) {
+        if (idx + curW > clean.length) break;
+        const chunk = clean.slice(idx, idx + curW);
+        idx += curW;
+        const num = parseInt(chunk, 2);
+        if (num === 0) {
+          if (idx + curW > clean.length) break;
+          const wCode = parseInt(clean.slice(idx, idx + curW), 2);
+          idx += curW;
+          const nextW = (wCode === 8 || wCode === 10 || wCode === 11 || wCode === 17 || wCode === 21) ? wCode : 8;
+          curW = nextW;
+          continue;
+        }
+        const span = Math.max(1, (1 << curW) - 11);
+        const rawOffset = ((num - 11) % span + span) % span;
+        let cp = rawOffset;
+        if (curW === 10) cp = 0x0900 + (rawOffset % 0x80);
+        else if (curW === 11) cp = 0x1f300 + (rawOffset % 0x800);
+        else if (curW === 17) cp = 0x4e00 + (rawOffset % 0x5200);
+        else if (curW === 21) cp = 0x10000 + (rawOffset % 0x10000);
+        else cp = rawOffset % 0x80;
+
+        try {
+          out.push(String.fromCodePoint(cp));
+        } catch (_) {
+          out.push("?");
+        }
+      }
+      return out.join("");
+    }
+
+    function decodeBinaryToText() {
+      const binBox = document.getElementById("binaryText");
+      const raw = binBox ? binBox.value : "";
+      const clean = raw.replace(/[^01]/g, "");
+      const decoded = mapBitsToChars(clean);
+      const sampleBox = document.getElementById("sampleText");
+      sampleBox.value = decoded;
+      document.getElementById("resultBox").innerHTML =
+        `<strong>Binary Decoded:</strong> ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
+        `<strong>UTF-8:</strong> ${new TextEncoder().encode(decoded).length * 8} bits`;
+      document.getElementById("visualFlowBox").textContent =
+        `Decoded ${clean.length} bits into ${[...decoded].length} chars (continuous 01 stream).`;
+    }
+
+    function copyBinaryStream() {
+      const binBox = document.getElementById("binaryText");
+      if (!binBox) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(binBox.value).catch(() => {});
+      }
+      binBox.focus();
+      binBox.select();
     }
 
     function fillHindi1KB() {
