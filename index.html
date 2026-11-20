@@ -252,13 +252,32 @@ W8 (8-bit):  [00001011 = A]</pre>
 
     let binaryViewMode = "default";
 
+    const CJK_PUNCT = [
+      0x3001, 0x3002, 0x3008, 0x3009, 0x300a, 0x300b, 0x300c, 0x300d,
+      0x300e, 0x300f, 0x3010, 0x3011, 0xff01, 0xff08, 0xff09, 0xff0c,
+      0xff0e, 0xff1a, 0xff1b, 0xff1f, 0x201c, 0x201d, 0x2018, 0x2019
+    ];
+
+    function getEffectiveWindow(cp, curW, dominantW) {
+      let wHere = getCharWindow(cp);
+      // W10 Hybrid: ASCII fits directly inside W10 without jumping to W8
+      if ((curW === 10 || dominantW === 10) && cp <= 0x7f) {
+        return 10;
+      }
+      // W17 Hybrid: ASCII + CJK punctuation fit directly inside W17 without jumping to W8 or W21
+      if ((curW === 17 || dominantW === 17) && (cp <= 0x7f || CJK_PUNCT.includes(cp))) {
+        return 17;
+      }
+      return wHere;
+    }
+
     function encodeWindowCharBits(cp, w) {
       let offset = 0;
       if (w === 8) {
         offset = cp & 0x7f;
       } else if (w === 10) {
         if (cp <= 0x7f) {
-          offset = cp; // 0..127: ASCII inside W10 (no jump to W8 needed!)
+          offset = cp; // 0..127: ASCII inside W10
         } else if (cp >= 0x0900 && cp <= 0x097f) {
           offset = 128 + (cp - 0x0900); // 128..255: Devanagari inside W10
         } else {
@@ -267,7 +286,16 @@ W8 (8-bit):  [00001011 = A]</pre>
       } else if (w === 11) {
         offset = (cp >= 0x1f300) ? (cp - 0x1f300) % 2037 : (cp % 2037);
       } else if (w === 17) {
-        offset = (cp >= 0x4e00) ? (cp - 0x4e00) % 131061 : (cp % 131061);
+        const pIdx = CJK_PUNCT.indexOf(cp);
+        if (cp <= 0x7f) {
+          offset = cp; // 0..127: ASCII inside W17 (no jump to W8!)
+        } else if (pIdx !== -1) {
+          offset = 128 + pIdx; // 128..151: CJK punctuation inside W17 (no jump to W21!)
+        } else if (cp >= 0x4e00 && cp <= 0x9fff) {
+          offset = 256 + (cp - 0x4e00); // 256..21247: CJK Han block
+        } else {
+          offset = 21248 + (cp % 109813);
+        }
       } else {
         offset = cp % 2097141;
       }
@@ -283,13 +311,16 @@ W8 (8-bit):  [00001011 = A]</pre>
       if (w === 8) {
         return offset & 0x7f;
       } else if (w === 10) {
-        if (offset < 128) return offset; // ASCII
-        if (offset < 256) return 0x0900 + (offset - 128); // Devanagari
+        if (offset < 128) return offset;
+        if (offset < 256) return 0x0900 + (offset - 128);
         return offset;
       } else if (w === 11) {
         return 0x1f300 + offset;
       } else if (w === 17) {
-        return 0x4e00 + offset;
+        if (offset < 128) return offset; // ASCII
+        if (offset >= 128 && offset < 128 + CJK_PUNCT.length) return CJK_PUNCT[offset - 128]; // CJK Punctuation
+        if (offset >= 256 && offset < 256 + (0x9fff - 0x4e00 + 1)) return 0x4e00 + (offset - 256); // CJK Han
+        return offset;
       }
       return offset;
     }
@@ -317,28 +348,19 @@ W8 (8-bit):  [00001011 = A]</pre>
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
         const cp = ch.codePointAt(0);
-        let wHere = getCharWindow(cp);
-
-        // If we are already in W10 (Hybrid Hindi+ASCII) and see ASCII (cp <= 0x7f), stay in W10!
-        if (curW === 10 && cp <= 0x7f) {
-          wHere = 10;
-        }
-        // If dominant is W10 and text starts with ASCII followed by Hindi, jump to W10 once and stay there
-        if (curW === 8 && dominantW === 10 && cp <= 0x7f) {
-          wHere = 10;
-        }
+        const wHere = getEffectiveWindow(cp, curW, dominantW);
 
         if (wHere !== curW) {
-          const ctrlW = Math.min(curW, wHere);
-          const nullBits = "0".repeat(ctrlW);
-          const wCodeVal = Math.min((1 << ctrlW) - 1, 10 + wHere);
-          const wCodeBits = wCodeVal.toString(2).padStart(ctrlW, "0");
+          // Always emit nullw + targetW code in current active window width curW so decoder never desyncs!
+          const nullBits = "0".repeat(curW);
+          const wCodeVal = 10 + wHere;
+          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
 
           for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
-          readLines.push(`${nullBits}=${ctrlW}nullw`);
-          readLines.push(`${wCodeBits}=${ctrlW}w${wCodeVal}c${wHere}`);
+          readLines.push(`${nullBits}=${curW}nullw`);
+          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
           tokenSegments.push({ bits: nullBits + wCodeBits, label: `switch->W${wHere}` });
-          flowLines.push(`Switch W${curW} -> W${wHere} (${ctrlW * 2} bits)`);
+          flowLines.push(`Switch W${curW} -> W${wHere} (${curW * 2} bits)`);
           curW = wHere;
         }
 
