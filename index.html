@@ -201,6 +201,7 @@
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
         <button type="button" onclick="fillHindi1KB()" style="background:#1e3a5f; color:#e2e8f0;">1 KB Hindi Sample</button>
         <button type="button" onclick="estimateBits()">Compress &amp; Calculate</button>
+        <button type="button" onclick="copySampleText()" style="background:#0f766e; color:#f8fafc;">Copy Text</button>
         <button type="button" onclick="clearSample()" style="background:#334155; color:#f8fafc;">Clear</button>
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
@@ -250,17 +251,47 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     let binaryViewMode = "default";
-    const streamRegistry = new Map();
 
     function encodeWindowCharBits(cp, w) {
-      const span = Math.max(1, (1 << w) - 11);
-      const offset = cp % span;
+      let offset = 0;
+      if (w === 8) {
+        offset = cp & 0x7f;
+      } else if (w === 10) {
+        if (cp <= 0x7f) {
+          offset = cp; // 0..127: ASCII inside W10 (no jump to W8 needed!)
+        } else if (cp >= 0x0900 && cp <= 0x097f) {
+          offset = 128 + (cp - 0x0900); // 128..255: Devanagari inside W10
+        } else {
+          offset = 256 + (cp % 757);
+        }
+      } else if (w === 11) {
+        offset = (cp >= 0x1f300) ? (cp - 0x1f300) % 2037 : (cp % 2037);
+      } else if (w === 17) {
+        offset = (cp >= 0x4e00) ? (cp - 0x4e00) % 131061 : (cp % 131061);
+      } else {
+        offset = cp % 2097141;
+      }
       const codeVal = 11 + offset;
       return {
         bits: codeVal.toString(2).padStart(w, "0"),
         offset,
         codeVal
       };
+    }
+
+    function decodeWindowOffset(offset, w) {
+      if (w === 8) {
+        return offset & 0x7f;
+      } else if (w === 10) {
+        if (offset < 128) return offset; // ASCII
+        if (offset < 256) return 0x0900 + (offset - 128); // Devanagari
+        return offset;
+      } else if (w === 11) {
+        return 0x1f300 + offset;
+      } else if (w === 17) {
+        return 0x4e00 + offset;
+      }
+      return offset;
     }
 
     function computeDwleStream(text) {
@@ -283,29 +314,18 @@ W8 (8-bit):  [00001011 = A]</pre>
       const readLines = [];
       const tokenSegments = [];
 
-      let i = 0;
-      while (i < chars.length) {
+      for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
         const cp = ch.codePointAt(0);
-        const wHere = getCharWindow(cp);
-        const wNext = (i + 1 < chars.length) ? getCharWindow(chars[i + 1].codePointAt(0)) : dominantW;
-        const isOneShotJump = (wHere !== curW) && (wHere !== dominantW) && (wNext === dominantW);
+        let wHere = getCharWindow(cp);
 
-        if (isOneShotJump) {
-          const ctrlW = Math.min(curW, wHere);
-          const nullBits = "0".repeat(ctrlW);
-          const jumpCodeVal = Math.min((1 << ctrlW) - 1, 10 + wHere);
-          const jumpBits = jumpCodeVal.toString(2).padStart(ctrlW, "0");
-          const enc = encodeWindowCharBits(cp, wHere);
-
-          for (const c of (nullBits + jumpBits + enc.bits)) bits.push(Number(c));
-          readLines.push(`${nullBits}=${ctrlW}nullw`);
-          readLines.push(`${jumpBits}=${ctrlW}w${jumpCodeVal}c${wHere}`);
-          readLines.push(`${enc.bits}=${wHere}wL1=${ch}${enc.offset}`);
-          tokenSegments.push({ bits: nullBits + jumpBits + enc.bits, label: `${wHere}w-jump:${ch}` });
-          flowLines.push(`1-Shot Jump W${wHere} (ctrl ${ctrlW}b): [${ch}] -> stay/return W${curW}`);
-          i += 1;
-          continue;
+        // If we are already in W10 (Hybrid Hindi+ASCII) and see ASCII (cp <= 0x7f), stay in W10!
+        if (curW === 10 && cp <= 0x7f) {
+          wHere = 10;
+        }
+        // If dominant is W10 and text starts with ASCII followed by Hindi, jump to W10 once and stay there
+        if (curW === 8 && dominantW === 10 && cp <= 0x7f) {
+          wHere = 10;
         }
 
         if (wHere !== curW) {
@@ -318,7 +338,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           readLines.push(`${nullBits}=${ctrlW}nullw`);
           readLines.push(`${wCodeBits}=${ctrlW}w${wCodeVal}c${wHere}`);
           tokenSegments.push({ bits: nullBits + wCodeBits, label: `switch->W${wHere}` });
-          flowLines.push(`Switch W${curW} -> W${wHere} using ${ctrlW}-bit ctrl (${ctrlW * 2} bits)`);
+          flowLines.push(`Switch W${curW} -> W${wHere} (${ctrlW * 2} bits)`);
           curW = wHere;
         }
 
@@ -326,14 +346,6 @@ W8 (8-bit):  [00001011 = A]</pre>
         for (const c of enc.bits) bits.push(Number(c));
         readLines.push(`${enc.bits}=${curW}wL1=${ch}${enc.offset}`);
         tokenSegments.push({ bits: enc.bits, label: `${curW}w:${ch}` });
-        i += 1;
-      }
-
-      const rawBitStr = bits.join("");
-      streamRegistry.set(rawBitStr, text);
-      if (streamRegistry.size > 100) {
-        const firstKey = streamRegistry.keys().next().value;
-        streamRegistry.delete(firstKey);
       }
 
       return {
@@ -377,27 +389,34 @@ W8 (8-bit):  [00001011 = A]</pre>
       const clean = (binBox.value || "").replace(/[^01]/g, "");
       if (!clean) return;
 
-      const sampleText = document.getElementById("sampleText").value || "";
-      const dwle = computeDwleStream(sampleText);
-      if (dwle.bits.join("") === clean && dwle.tokenSegments && dwle.tokenSegments.length > 0) {
-        binBox.value = dwle.tokenSegments.map(seg => `${seg.bits}  [${seg.label}]`).join("\n");
-        return;
-      }
-
       let curW = 8;
       let idx = 0;
       const lines = [];
       while (idx < clean.length) {
         const chunk = clean.slice(idx, idx + curW);
-        lines.push(`${chunk}  [${curW}w]`);
-        idx += chunk.length;
-        if (chunk.length === curW && parseInt(chunk, 2) === 0 && idx + curW <= clean.length) {
-          const nextChunk = clean.slice(idx, idx + curW);
-          lines.push(`${nextChunk}  [${curW}w-code]`);
-          idx += nextChunk.length;
-          const targetW = parseInt(nextChunk, 2) - 10;
-          if ([8, 9, 10, 11, 17, 21].includes(targetW)) curW = targetW;
+        if (chunk.length < curW) {
+          lines.push(`${chunk}  [rem]`);
+          break;
         }
+        const num = parseInt(chunk, 2);
+        if (num === 0) {
+          lines.push(`${chunk}  [${curW}nullw]`);
+          idx += curW;
+          if (idx + curW <= clean.length) {
+            const nextChunk = clean.slice(idx, idx + curW);
+            const targetW = parseInt(nextChunk, 2) - 10;
+            lines.push(`${nextChunk}  [${curW}w->W${targetW}]`);
+            idx += curW;
+            if ([8, 9, 10, 11, 17, 21].includes(targetW)) curW = targetW;
+          }
+          continue;
+        }
+        const offset = num - 11;
+        const cp = decodeWindowOffset(offset, curW);
+        let ch = "?";
+        try { ch = String.fromCodePoint(cp); } catch (_) {}
+        lines.push(`${chunk}  [${curW}w:${ch}]`);
+        idx += curW;
       }
       binBox.value = lines.join("\n");
     }
@@ -426,9 +445,6 @@ W8 (8-bit):  [00001011 = A]</pre>
     function mapBitsToChars(bitStr) {
       const clean = (bitStr || "").replace(/[^01]/g, "");
       if (!clean) return "";
-      if (streamRegistry.has(clean)) {
-        return streamRegistry.get(clean);
-      }
 
       let curW = 8;
       let idx = 0;
@@ -448,16 +464,8 @@ W8 (8-bit):  [00001011 = A]</pre>
           }
           continue;
         }
-        const span = Math.max(1, (1 << curW) - 11);
-        const offset = ((num - 11) % span + span) % span;
-        let cp = offset;
-        if (curW === 10) cp = 0x0900 + (offset % 0x80);
-        else if (curW === 9) cp = 0x0900 + (offset % 0x80);
-        else if (curW === 11) cp = 0x1f300 + (offset % 0x800);
-        else if (curW === 17) cp = 0x4e00 + (offset % 0x5200);
-        else if (curW === 21) cp = 0x10000 + (offset % 0x10000);
-        else cp = offset % 0x80;
-
+        const offset = num - 11;
+        const cp = decodeWindowOffset(offset, curW);
         try {
           out.push(String.fromCodePoint(cp));
         } catch (_) {
@@ -478,7 +486,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         `<strong>Binary Decoded:</strong> ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         `<strong>UTF-8:</strong> ${new TextEncoder().encode(decoded).length * 8} bits`;
       document.getElementById("visualFlowBox").textContent =
-        `Decoded ${clean.length} bits into ${[...decoded].length} chars: "${decoded}".`;
+        `Decoded ${clean.length} bits into ${[...decoded].length} chars.`;
     }
 
     function copyBinaryStream() {
@@ -491,6 +499,16 @@ W8 (8-bit):  [00001011 = A]</pre>
       }
       binBox.focus();
       binBox.select();
+    }
+
+    function copySampleText() {
+      const sampleBox = document.getElementById("sampleText");
+      if (!sampleBox) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(sampleBox.value || "").catch(() => {});
+      }
+      sampleBox.focus();
+      sampleBox.select();
     }
 
     function fillHindi1KB() {
