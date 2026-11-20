@@ -429,7 +429,7 @@ W8 (8-bit):  [00001011 = A]</pre>
             const targetW = parseInt(nextChunk, 2) - 10;
             lines.push(`${nextChunk}  [${curW}w->W${targetW}]`);
             idx += curW;
-            if ([8, 9, 10, 11, 17, 21].includes(targetW)) curW = targetW;
+            if ([5, 8, 9, 10, 11, 13, 17, 21].includes(targetW)) curW = targetW;
           }
           continue;
         }
@@ -440,7 +440,8 @@ W8 (8-bit):  [00001011 = A]</pre>
         lines.push(`${chunk}  [${curW}w:${ch}]`);
         idx += curW;
       }
-      binBox.value = lines.join("\n");
+      binBox.value = lines.join("
+");
     }
 
     function estimateBits() {
