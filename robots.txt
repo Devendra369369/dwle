@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://Devendra369369.github.io/dwle/sitemap.xml
