@@ -178,8 +178,11 @@
     <section>
       <h2>Live Bit Estimator (UTF-8 vs DWLE Window Estimate)</h2>
       <p>Yahan koi bhi text likh kar UTF-8 aur estimated DWLE bit usage compare karo:</p>
-      <textarea id="sampleText" placeholder="Yahan Hindi, English, ya Chinese text likho...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
-      <button onclick="estimateBits()">Bits Calculate Karo</button>
+      <textarea id="sampleText" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" oninput="estimateBits()" placeholder="Yahan Hindi, English, ya Chinese text likho...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+        <button type="button" onclick="estimateBits()">Bits Calculate Karo</button>
+        <button type="button" onclick="clearSample()" style="background:#334155; color:#f8fafc;">Clear</button>
+      </div>
       <div class="out-box" id="resultBox">Upar "Bits Calculate Karo" par click karo.</div>
     </section>
 
@@ -227,6 +230,12 @@ W8 (8-bit):  [00001011 = A]</pre>
         `<strong>UTF-8:</strong> ${utf8Bits} bits | ` +
         `<strong>DWLE (est.):</strong> ${dwleBits} bits | ` +
         `<strong>Bachat:</strong> ${pct}% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
+    }
+    function clearSample() {
+      const box = document.getElementById("sampleText");
+      box.value = "";
+      estimateBits();
+      box.focus();
     }
     estimateBits();
   </script>
