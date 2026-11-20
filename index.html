@@ -405,22 +405,9 @@ W8 (8-bit):  [00001011 = A]</pre>
     function downloadDwleFile() {
       const text = document.getElementById("sampleText").value || "";
       const dwle = computeDwleStream(text);
-      const bitArr = dwle.bits;
-      const byteLen = Math.ceil(bitArr.length / 8);
-      const out = new Uint8Array(4 + byteLen);
-      const total = bitArr.length;
-      out[0] = (total >>> 24) & 0xff;
-      out[1] = (total >>> 16) & 0xff;
-      out[2] = (total >>> 8) & 0xff;
-      out[3] = total & 0xff;
-
-      for (let i = 0; i < total; i++) {
-        if (bitArr[i]) {
-          out[4 + (i >> 3)] |= (1 << (7 - (i & 7)));
-        }
-      }
-
-      const blob = new Blob([out], { type: "application/octet-stream" });
+      const bitStr = dwle.bits.join("");
+      const bytes = new TextEncoder().encode(bitStr);
+      const blob = new Blob([bytes], { type: "text/plain;charset=utf-8" });
       triggerDownload(blob, "dwle-compressed.dwle");
     }
 
@@ -430,25 +417,29 @@ W8 (8-bit):  [00001011 = A]</pre>
 
       const reader = new FileReader();
       reader.onload = function () {
-        const arr = new Uint8Array(reader.result);
-        if (arr.length < 4) {
+        const rawText = String(reader.result || "");
+        const cleanBits = rawText.replace(/[^01]/g, "");
+        if (!cleanBits) {
           document.getElementById("resultBox").innerHTML =
-            `<strong>Decoder Notice:</strong> "${file.name}" (${arr.length} B) valid .dwle file nahi lagti.`;
+            `<strong>Decoder Notice:</strong> "${file.name}" (${rawText.length} chars) mein valid 0/1 bit-stream nahi mila.`;
           event.target.value = "";
           return;
         }
 
-        const bitCount = (((arr[0] << 24) | (arr[1] << 16) | (arr[2] << 8) | arr[3]) >>> 0);
-        const payloadBytes = Math.max(0, arr.length - 4);
-        const estBytes = Math.ceil(bitCount / 8);
+        const binBox = document.getElementById("binaryText");
+        if (binBox) binBox.value = cleanBits;
+
+        const decoded = mapBitsToChars(cleanBits);
+        document.getElementById("sampleText").value = decoded;
 
         document.getElementById("resultBox").innerHTML =
-          `<strong>Decoded .DWLE Header:</strong> ${file.name} | ` +
-          `<strong>File Size:</strong> ${arr.length} B (payload: ${payloadBytes} B) | ` +
-          `<strong>Packed Bits:</strong> ${bitCount} bits (~${estBytes} B)`;
+          `<strong>Decoded .DWLE File:</strong> ${file.name} (${cleanBits.length} bits) &rarr; ${[...decoded].length} chars | ` +
+          `<strong>UTF-8:</strong> ${new TextEncoder().encode(decoded).length * 8} bits`;
+        document.getElementById("visualFlowBox").textContent =
+          `Loaded ${cleanBits.length} bits from ${file.name} and decoded to ${[...decoded].length} chars.`;
         event.target.value = "";
       };
-      reader.readAsArrayBuffer(file);
+      reader.readAsText(file, "utf-8");
     }
 
     function clearSample() {
