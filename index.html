@@ -625,6 +625,116 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
       box.focus();
     }
     estimateBits();
+  
+    function computeSmartJumpStream(text) {
+      const chars = [...text];
+      if (chars.length === 0) {
+        return computeDwleStream("");
+      }
+
+      // Count dominant window & longest consecutive runs per window
+      const freq = new Map();
+      const maxRun = new Map();
+      let prevW = null;
+      let runLen = 0;
+
+      for (const ch of chars) {
+        const w = getCharWindow(ch.codePointAt(0));
+        freq.set(w, (freq.get(w) || 0) + 1);
+        if (w === prevW) {
+          runLen += 1;
+        } else {
+          prevW = w;
+          runLen = 1;
+        }
+        if (runLen > (maxRun.get(w) || 0)) {
+          maxRun.set(w, runLen);
+        }
+      }
+
+      let domW = 8;
+      let bestScore = -1;
+      for (const [w, cnt] of freq.entries()) {
+        const score = cnt * 2 + (maxRun.get(w) || 0) * 3;
+        if (score > bestScore) {
+          bestScore = score;
+          domW = w;
+        }
+      }
+
+      let curW = 8;
+      const bits = [];
+      const flowLines = [`Smart Jump Anchor: W${domW} (Han -> W13)`];
+      const readLines = [];
+      const tokenSegments = [];
+
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const cp = ch.codePointAt(0);
+        let wHere = getEffectiveWindow(cp, curW, domW);
+
+        // Lookahead: if current is W10/W13/W17 and next char is ASCII while domW is 8 and next isn't W10/W13/W17, return to W8
+        if (curW !== 8 && cp <= 0x7f && domW === 8) {
+          const nextCh = chars[i + 1];
+          const nextW = nextCh ? getCharWindow(nextCh.codePointAt(0)) : 8;
+          if (nextW === 8) {
+            wHere = 8;
+          }
+        }
+
+        if (wHere !== curW) {
+          const nullBits = "0".repeat(curW);
+          const wCodeVal = 10 + wHere;
+          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
+
+          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
+          readLines.push(`${nullBits}=${curW}nullw`);
+          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
+          tokenSegments.push({ bits: nullBits + wCodeBits, label: `jump->W${wHere}` });
+          flowLines.push(`Smart Jump W${curW} -> W${wHere} at char #${i + 1} (${ch})`);
+          curW = wHere;
+        }
+
+        const enc = encodeWindowCharBits(cp, curW);
+        for (const c of enc.bits) bits.push(Number(c));
+        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+      }
+
+      return {
+        totalBits: bits.length,
+        bits,
+        dominantW: domW,
+        flowLines: flowLines.slice(0, 14),
+        readLines,
+        tokenSegments
+      };
+    }
+
+    function optimizeWindowJump() {
+      const sampleEl = document.getElementById("sampleText");
+      const text = sampleEl ? (sampleEl.value || "") : "";
+      const normalDwle = computeDwleStream(text);
+      const smartDwle = computeSmartJumpStream(text);
+      const utf8Bits = new TextEncoder().encode(text).length * 8;
+      const savedVsNormal = normalDwle.totalBits - smartDwle.totalBits;
+      const savedVsUtf8 = utf8Bits - smartDwle.totalBits;
+
+      const resEl = document.getElementById("resultBox");
+      if (resEl) {
+        resEl.innerHTML =
+          `<strong>Smart Jump (W${smartDwle.dominantW} + W13 Han):</strong> ${smartDwle.totalBits} bits | ` +
+          `<strong>Normal DWLE se bachat:</strong> ${savedVsNormal} bits | ` +
+          `<strong>UTF-8 se bachat:</strong> ${savedVsUtf8} bits`;
+      }
+
+      const flowEl = document.getElementById("visualFlowBox");
+      if (flowEl) {
+        flowEl.textContent = smartDwle.flowLines.join("\n");
+      }
+      renderBinaryComposer(smartDwle);
+    }
+
   </script>
   <footer style="text-align:center; padding:20px 12px; margin-top:32px; font-size:0.9rem; opacity:0.85;">
     &copy; 2026 Devendra Kumar &mdash; DWLE
