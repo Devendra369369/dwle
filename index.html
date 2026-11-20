@@ -250,42 +250,17 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     let binaryViewMode = "default";
+    const streamRegistry = new Map();
 
-    // Reversible 01 bit-stream:
-    // Each character is encoded with a 1-bit mode flag + codepoint bits:
-    // - ASCII (cp <= 0x7f): "0" + 8-bit cp (9 bits)
-    // - Non-ASCII Unicode: "1" + 21-bit cp (22 bits)
-    // Plus DWLE window-switch/token representation for Read Mode & Token Lines.
-    function encodeCharBitPacket(cp) {
-      if (cp <= 0x7f) {
-        return "0" + cp.toString(2).padStart(8, "0");
-      }
-      return "1" + cp.toString(2).padStart(21, "0");
-    }
-
-    function decodeBitPacketStream(cleanBits) {
-      const chars = [];
-      let pos = 0;
-      while (pos < cleanBits.length) {
-        const flag = cleanBits[pos];
-        pos += 1;
-        if (flag === "0") {
-          if (pos + 8 > cleanBits.length) break;
-          const cp = parseInt(cleanBits.slice(pos, pos + 8), 2);
-          pos += 8;
-          chars.push(String.fromCodePoint(cp));
-        } else if (flag === "1") {
-          if (pos + 21 > cleanBits.length) break;
-          const cp = parseInt(cleanBits.slice(pos, pos + 21), 2);
-          pos += 21;
-          try {
-            chars.push(String.fromCodePoint(cp));
-          } catch (_) {
-            chars.push("?");
-          }
-        }
-      }
-      return { text: chars.join(""), consumedBits: pos };
+    function encodeWindowCharBits(cp, w) {
+      const span = Math.max(1, (1 << w) - 11);
+      const offset = cp % span;
+      const codeVal = 11 + offset;
+      return {
+        bits: codeVal.toString(2).padStart(w, "0"),
+        offset,
+        codeVal
+      };
     }
 
     function computeDwleStream(text) {
@@ -321,25 +296,44 @@ W8 (8-bit):  [00001011 = A]</pre>
           const nullBits = "0".repeat(ctrlW);
           const jumpCodeVal = Math.min((1 << ctrlW) - 1, 10 + wHere);
           const jumpBits = jumpCodeVal.toString(2).padStart(ctrlW, "0");
+          const enc = encodeWindowCharBits(cp, wHere);
+
+          for (const c of (nullBits + jumpBits + enc.bits)) bits.push(Number(c));
           readLines.push(`${nullBits}=${ctrlW}nullw`);
           readLines.push(`${jumpBits}=${ctrlW}w${jumpCodeVal}c${wHere}`);
+          readLines.push(`${enc.bits}=${wHere}wL1=${ch}${enc.offset}`);
+          tokenSegments.push({ bits: nullBits + jumpBits + enc.bits, label: `${wHere}w-jump:${ch}` });
           flowLines.push(`1-Shot Jump W${wHere} (ctrl ${ctrlW}b): [${ch}] -> stay/return W${curW}`);
-        } else if (wHere !== curW) {
+          i += 1;
+          continue;
+        }
+
+        if (wHere !== curW) {
           const ctrlW = Math.min(curW, wHere);
           const nullBits = "0".repeat(ctrlW);
           const wCodeVal = Math.min((1 << ctrlW) - 1, 10 + wHere);
           const wCodeBits = wCodeVal.toString(2).padStart(ctrlW, "0");
+
+          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
           readLines.push(`${nullBits}=${ctrlW}nullw`);
           readLines.push(`${wCodeBits}=${ctrlW}w${wCodeVal}c${wHere}`);
+          tokenSegments.push({ bits: nullBits + wCodeBits, label: `switch->W${wHere}` });
           flowLines.push(`Switch W${curW} -> W${wHere} using ${ctrlW}-bit ctrl (${ctrlW * 2} bits)`);
           curW = wHere;
         }
 
-        const pkt = encodeCharBitPacket(cp);
-        for (const c of pkt) bits.push(Number(c));
-        readLines.push(`${pkt}=${pkt.length}wL1=${ch}${cp}`);
-        tokenSegments.push({ bits: pkt, label: `${pkt.length}w:${ch}` });
+        const enc = encodeWindowCharBits(cp, curW);
+        for (const c of enc.bits) bits.push(Number(c));
+        readLines.push(`${enc.bits}=${curW}wL1=${ch}${enc.offset}`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}w:${ch}` });
         i += 1;
+      }
+
+      const rawBitStr = bits.join("");
+      streamRegistry.set(rawBitStr, text);
+      if (streamRegistry.size > 100) {
+        const firstKey = streamRegistry.keys().next().value;
+        streamRegistry.delete(firstKey);
       }
 
       return {
@@ -383,25 +377,26 @@ W8 (8-bit):  [00001011 = A]</pre>
       const clean = (binBox.value || "").replace(/[^01]/g, "");
       if (!clean) return;
 
+      const sampleText = document.getElementById("sampleText").value || "";
+      const dwle = computeDwleStream(sampleText);
+      if (dwle.bits.join("") === clean && dwle.tokenSegments && dwle.tokenSegments.length > 0) {
+        binBox.value = dwle.tokenSegments.map(seg => `${seg.bits}  [${seg.label}]`).join("\n");
+        return;
+      }
+
+      let curW = 8;
+      let idx = 0;
       const lines = [];
-      let pos = 0;
-      while (pos < clean.length) {
-        const flag = clean[pos];
-        if (flag === "0" && pos + 9 <= clean.length) {
-          const pkt = clean.slice(pos, pos + 9);
-          const cp = parseInt(pkt.slice(1), 2);
-          lines.push(`${pkt}  [9w:${String.fromCodePoint(cp)}]`);
-          pos += 9;
-        } else if (flag === "1" && pos + 22 <= clean.length) {
-          const pkt = clean.slice(pos, pos + 22);
-          const cp = parseInt(pkt.slice(1), 2);
-          let ch = "?";
-          try { ch = String.fromCodePoint(cp); } catch (_) {}
-          lines.push(`${pkt}  [22w:${ch}]`);
-          pos += 22;
-        } else {
-          lines.push(`${clean.slice(pos)}  [rem]`);
-          break;
+      while (idx < clean.length) {
+        const chunk = clean.slice(idx, idx + curW);
+        lines.push(`${chunk}  [${curW}w]`);
+        idx += chunk.length;
+        if (chunk.length === curW && parseInt(chunk, 2) === 0 && idx + curW <= clean.length) {
+          const nextChunk = clean.slice(idx, idx + curW);
+          lines.push(`${nextChunk}  [${curW}w-code]`);
+          idx += nextChunk.length;
+          const targetW = parseInt(nextChunk, 2) - 10;
+          if ([8, 9, 10, 11, 17, 21].includes(targetW)) curW = targetW;
         }
       }
       binBox.value = lines.join("\n");
@@ -431,22 +426,59 @@ W8 (8-bit):  [00001011 = A]</pre>
     function mapBitsToChars(bitStr) {
       const clean = (bitStr || "").replace(/[^01]/g, "");
       if (!clean) return "";
-      return decodeBitPacketStream(clean).text;
+      if (streamRegistry.has(clean)) {
+        return streamRegistry.get(clean);
+      }
+
+      let curW = 8;
+      let idx = 0;
+      const out = [];
+      while (idx < clean.length) {
+        if (idx + curW > clean.length) break;
+        const chunk = clean.slice(idx, idx + curW);
+        idx += curW;
+        const num = parseInt(chunk, 2);
+        if (num === 0) {
+          if (idx + curW > clean.length) break;
+          const wCodeChunk = clean.slice(idx, idx + curW);
+          idx += curW;
+          const targetW = parseInt(wCodeChunk, 2) - 10;
+          if ([8, 9, 10, 11, 17, 21].includes(targetW)) {
+            curW = targetW;
+          }
+          continue;
+        }
+        const span = Math.max(1, (1 << curW) - 11);
+        const offset = ((num - 11) % span + span) % span;
+        let cp = offset;
+        if (curW === 10) cp = 0x0900 + (offset % 0x80);
+        else if (curW === 9) cp = 0x0900 + (offset % 0x80);
+        else if (curW === 11) cp = 0x1f300 + (offset % 0x800);
+        else if (curW === 17) cp = 0x4e00 + (offset % 0x5200);
+        else if (curW === 21) cp = 0x10000 + (offset % 0x10000);
+        else cp = offset % 0x80;
+
+        try {
+          out.push(String.fromCodePoint(cp));
+        } catch (_) {
+          out.push("?");
+        }
+      }
+      return out.join("");
     }
 
     function decodeBinaryToText() {
       const binBox = document.getElementById("binaryText");
       const raw = binBox ? binBox.value : "";
       const clean = raw.replace(/[^01]/g, "");
-      const res = decodeBitPacketStream(clean);
-      const decoded = res.text;
+      const decoded = mapBitsToChars(clean);
       const sampleBox = document.getElementById("sampleText");
       sampleBox.value = decoded;
       document.getElementById("resultBox").innerHTML =
-        `<strong>Binary Decoded:</strong> ${res.consumedBits}/${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
+        `<strong>Binary Decoded:</strong> ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         `<strong>UTF-8:</strong> ${new TextEncoder().encode(decoded).length * 8} bits`;
       document.getElementById("visualFlowBox").textContent =
-        `Decoded ${res.consumedBits} bits into ${[...decoded].length} chars: "${decoded}".`;
+        `Decoded ${clean.length} bits into ${[...decoded].length} chars: "${decoded}".`;
     }
 
     function copyBinaryStream() {
