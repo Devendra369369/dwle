@@ -177,11 +177,23 @@
 
     <section>
       <h2>Live Bit Estimator &amp; File Exporter (UTF-8 vs DWLE)</h2>
-      <p>Binary Composer (upar): Character composer se live <code>01</code> bit-stream banta hai, ya yahan <code>0</code>/<code>1</code> likh/paste karke neeche decode karo:</p>
-      <textarea id="binaryText" rows="3" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" placeholder="Yahan 0101... binary bits likho ya paste karo..."></textarea>
-      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
-        <button type="button" onclick="decodeBinaryToText()" style="background:#0369a1; color:#f8fafc;">Decode 01 to Text</button>
+      <p>Binary Composer (upar): Live <code>01</code> bit-stream dekho, <strong>Read Mode</strong> se token-by-token padho, ya <code>0</code>/<code>1</code> likh/paste karke neeche decode karo:</p>
+      <textarea id="binaryText" rows="5" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" placeholder="Yahan 0101... binary bits likho ya paste karo..."></textarea>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:10px;">
+        <button type="button" onclick="setBinaryMode('default')" id="btnModeDefault" style="background:#0369a1; color:#f8fafc;">Default 01</button>
+        <button type="button" onclick="setBinaryMode('read')" id="btnModeRead" style="background:#334155; color:#f8fafc;">Read Mode</button>
+        <button type="button" onclick="formatTokenLines()" style="background:#1e3a5f; color:#e2e8f0;">Token Lines 01</button>
+        <button type="button" onclick="decodeBinaryToText()" style="background:#0f766e; color:#f8fafc;">Decode 01 to Text</button>
         <button type="button" onclick="copyBinaryStream()" style="background:#334155; color:#f8fafc;">Copy 01</button>
+        <button type="button" onclick="toggleNirdesh()" style="background:#6d28d9; color:#f8fafc;">Nirdesh</button>
+      </div>
+      <div class="out-box" id="nirdeshBox" style="display:none; margin-bottom:12px; font-size:0.9rem;">
+        <strong>Nirdesh (Symbol Note):</strong>
+        <code>8w</code> / <code>10w</code> = window width (bits),
+        <code>L1</code> = level 1,
+        <code>A76</code> = symbol <code>A</code> aur index/position <code>76</code>,
+        <code>8nullw</code> = 8-bit window mein null switch marker,
+        <code>19c9</code> = value <code>19</code> + jump/code <code>c9</code> (width 9).
       </div>
       <p>Yahan 1 KB ya usse bada koi bhi text likho, compress/calculate karo, aur Unicode (UTF-8) ya DWLE file download karo:</p>
       <textarea id="sampleText" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" oninput="estimateBits()" placeholder="Yahan Hindi, English, ya mixed text likho (1 KB se bada bhi chalega)...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
@@ -237,52 +249,138 @@ W8 (8-bit):  [00001011 = A]</pre>
       return bestW;
     }
 
+    let binaryViewMode = "default";
+    let lastEncodedItems = [];
+    let lastRawBits = "";
+
+    function encodeCharForWindow(cp, w) {
+      const span = Math.max(1, (1 << w) - 11);
+      const offset = cp % span;
+      const codeVal = offset + 11;
+      const bits = [];
+      for (let b = w - 1; b >= 0; b--) bits.push((codeVal >> b) & 1);
+      return { bits: bits.join(""), codeVal, offset };
+    }
+
     function computeDwleStream(text) {
       const chars = [...text];
       if (chars.length === 0) {
-        return { totalBits: 0, bits: [], dominantW: 8, flowLines: ["Empty text"] };
+        lastEncodedItems = [];
+        lastRawBits = "";
+        return { totalBits: 0, bits: [], dominantW: 8, flowLines: ["Empty text"], readLines: [] };
       }
 
       const dominantW = getDominantWindow(chars);
       let curW = 8;
       const bits = [];
       const flowLines = [`Dominant Window: W${dominantW}`];
+      const readLines = [];
+      const items = [];
 
       let i = 0;
       while (i < chars.length) {
-        const wHere = getCharWindow(chars[i].codePointAt(0));
+        const ch = chars[i];
+        const cp = ch.codePointAt(0);
+        const wHere = getCharWindow(cp);
         const wNext = (i + 1 < chars.length) ? getCharWindow(chars[i + 1].codePointAt(0)) : dominantW;
 
         const isOneShotJump = (wHere !== curW) && (wHere !== dominantW) && (wNext === dominantW);
 
         if (isOneShotJump) {
           const ctrlW = Math.min(curW, wHere);
-          for (let b = 0; b < ctrlW * 2 + 1; b++) bits.push(0);
-          const val = (chars[i].codePointAt(0) % Math.max(1, (1 << wHere) - 11)) + 11;
-          for (let b = wHere - 1; b >= 0; b--) bits.push((val >> b) & 1);
-          flowLines.push(`1-Shot Jump W${wHere} (ctrl ${ctrlW}b): [${chars[i]}] -> stay/return W${curW}`);
+          const nullBits = "0".repeat(ctrlW);
+          const jumpCodeVal = Math.min((1 << ctrlW) - 1, 11 + wHere);
+          const jumpBits = jumpCodeVal.toString(2).padStart(ctrlW, "0");
+          const encChar = encodeCharForWindow(cp, wHere);
+
+          for (const c of (nullBits + jumpBits + encChar.bits)) bits.push(Number(c));
+          readLines.push(`${nullBits}=${ctrlW}nullw`);
+          readLines.push(`${jumpBits}=${ctrlW}w${jumpCodeVal}c${wHere}`);
+          readLines.push(`${encChar.bits}=${wHere}wL1=${ch}${encChar.offset}`);
+          flowLines.push(`1-Shot Jump W${wHere} (ctrl ${ctrlW}b): [${ch}] -> stay/return W${curW}`);
+          items.push({ ch, cp, w: wHere, offset: encChar.offset });
           i += 1;
           continue;
         }
 
         if (wHere !== curW) {
           const ctrlW = Math.min(curW, wHere);
-          for (let b = 0; b < ctrlW * 2; b++) bits.push(0);
+          const nullBits = "0".repeat(ctrlW);
+          const wCodeVal = Math.min((1 << ctrlW) - 1, 11 + wHere);
+          const wCodeBits = wCodeVal.toString(2).padStart(ctrlW, "0");
+
+          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
+          readLines.push(`${nullBits}=${ctrlW}nullw`);
+          readLines.push(`${wCodeBits}=${ctrlW}w${wCodeVal}c${wHere}`);
           flowLines.push(`Switch W${curW} -> W${wHere} using ${ctrlW}-bit ctrl (${ctrlW * 2} bits)`);
           curW = wHere;
         }
 
-        const val = (chars[i].codePointAt(0) % Math.max(1, (1 << curW) - 11)) + 11;
-        for (let b = curW - 1; b >= 0; b--) bits.push((val >> b) & 1);
+        const encChar = encodeCharForWindow(cp, curW);
+        for (const c of encChar.bits) bits.push(Number(c));
+        readLines.push(`${encChar.bits}=${curW}wL1=${ch}${encChar.offset}`);
+        items.push({ ch, cp, w: curW, offset: encChar.offset });
         i += 1;
       }
+
+      lastEncodedItems = items;
+      lastRawBits = bits.join("");
 
       return {
         totalBits: bits.length,
         bits,
         dominantW,
-        flowLines: flowLines.slice(0, 12)
+        flowLines: flowLines.slice(0, 12),
+        readLines
       };
+    }
+
+    function renderBinaryComposer(dwle) {
+      const binBox = document.getElementById("binaryText");
+      if (!binBox || document.activeElement === binBox) return;
+      if (binaryViewMode === "read") {
+        binBox.value = (dwle.readLines && dwle.readLines.length) ? dwle.readLines.join("\n") : "";
+      } else {
+        binBox.value = dwle.bits.join("");
+      }
+    }
+
+    function setBinaryMode(mode) {
+      binaryViewMode = mode;
+      const bDef = document.getElementById("btnModeDefault");
+      const bRead = document.getElementById("btnModeRead");
+      if (bDef) bDef.style.background = (mode === "default") ? "#0369a1" : "#334155";
+      if (bRead) bRead.style.background = (mode === "read") ? "#0369a1" : "#334155";
+      estimateBits();
+    }
+
+    function toggleNirdesh() {
+      const box = document.getElementById("nirdeshBox");
+      if (!box) return;
+      box.style.display = (box.style.display === "none") ? "block" : "none";
+    }
+
+    function formatTokenLines() {
+      const binBox = document.getElementById("binaryText");
+      if (!binBox) return;
+      const clean = (binBox.value || "").replace(/[^01]/g, "");
+      if (!clean) return;
+      let curW = 8;
+      let idx = 0;
+      const lines = [];
+      while (idx < clean.length) {
+        const chunk = clean.slice(idx, idx + curW);
+        lines.push(`${chunk}  [${curW}w]`);
+        idx += chunk.length;
+        if (chunk.length === curW && parseInt(chunk, 2) === 0 && idx + curW <= clean.length) {
+          const nextChunk = clean.slice(idx, idx + curW);
+          lines.push(`${nextChunk}  [${curW}w-code]`);
+          idx += nextChunk.length;
+          const parsedW = parseInt(nextChunk, 2) - 11;
+          if ([8, 10, 11, 17, 21].includes(parsedW)) curW = parsedW;
+        }
+      }
+      binBox.value = lines.join("\n");
     }
 
     function estimateBits() {
@@ -303,15 +401,16 @@ W8 (8-bit):  [00001011 = A]</pre>
         `<strong>Bachat:</strong> ${pct}% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
 
       document.getElementById("visualFlowBox").textContent = dwle.flowLines.join("\n");
-      const binBox = document.getElementById("binaryText");
-      if (binBox && document.activeElement !== binBox) {
-        binBox.value = dwle.bits.join("");
-      }
+      renderBinaryComposer(dwle);
     }
 
     function mapBitsToChars(bitStr) {
       const clean = (bitStr || "").replace(/[^01]/g, "");
       if (!clean) return "";
+      if (lastRawBits && clean === lastRawBits && lastEncodedItems.length > 0) {
+        return lastEncodedItems.map(it => it.ch).join("");
+      }
+
       let curW = 8;
       let idx = 0;
       const out = [];
@@ -322,20 +421,22 @@ W8 (8-bit):  [00001011 = A]</pre>
         const num = parseInt(chunk, 2);
         if (num === 0) {
           if (idx + curW > clean.length) break;
-          const wCode = parseInt(clean.slice(idx, idx + curW), 2);
+          const wCodeChunk = clean.slice(idx, idx + curW);
           idx += curW;
-          const nextW = (wCode === 8 || wCode === 10 || wCode === 11 || wCode === 17 || wCode === 21) ? wCode : 8;
-          curW = nextW;
+          const wCode = parseInt(wCodeChunk, 2) - 11;
+          if ([8, 10, 11, 17, 21].includes(wCode)) {
+            curW = wCode;
+          }
           continue;
         }
         const span = Math.max(1, (1 << curW) - 11);
-        const rawOffset = ((num - 11) % span + span) % span;
-        let cp = rawOffset;
-        if (curW === 10) cp = 0x0900 + (rawOffset % 0x80);
-        else if (curW === 11) cp = 0x1f300 + (rawOffset % 0x800);
-        else if (curW === 17) cp = 0x4e00 + (rawOffset % 0x5200);
-        else if (curW === 21) cp = 0x10000 + (rawOffset % 0x10000);
-        else cp = rawOffset % 0x80;
+        const offset = ((num - 11) % span + span) % span;
+        let cp = offset;
+        if (curW === 10) cp = 0x0900 + (offset % 0x80);
+        else if (curW === 11) cp = 0x1f300 + (offset % 0x800);
+        else if (curW === 17) cp = 0x4e00 + (offset % 0x5200);
+        else if (curW === 21) cp = 0x10000 + (offset % 0x10000);
+        else cp = offset % 0x80;
 
         try {
           out.push(String.fromCodePoint(cp));
@@ -357,14 +458,15 @@ W8 (8-bit):  [00001011 = A]</pre>
         `<strong>Binary Decoded:</strong> ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         `<strong>UTF-8:</strong> ${new TextEncoder().encode(decoded).length * 8} bits`;
       document.getElementById("visualFlowBox").textContent =
-        `Decoded ${clean.length} bits into ${[...decoded].length} chars (continuous 01 stream).`;
+        `Decoded ${clean.length} bits into ${[...decoded].length} chars.`;
     }
 
     function copyBinaryStream() {
       const binBox = document.getElementById("binaryText");
       if (!binBox) return;
+      const textToCopy = (binaryViewMode === "default" && lastRawBits) ? lastRawBits : binBox.value;
       if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(binBox.value).catch(() => {});
+        navigator.clipboard.writeText(textToCopy).catch(() => {});
       }
       binBox.focus();
       binBox.select();
