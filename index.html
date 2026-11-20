@@ -331,61 +331,23 @@ W8 (8-bit):  [00001011 = A]</pre>
       triggerDownload(blob, "dwle-unicode-utf8.bin");
     }
 
-    function encodeVarUint(num) {
-      const bytes = [];
-      let v = num >>> 0;
-      do {
-        let b = v & 0x7f;
-        v >>>= 7;
-        if (v > 0) b |= 0x80;
-        bytes.push(b);
-      } while (v > 0);
-      return bytes;
-    }
-
-    function decodeVarUint(arr, startIdx) {
-      let val = 0;
-      let shift = 0;
-      let idx = startIdx;
-      while (idx < arr.length) {
-        const b = arr[idx++];
-        val += (b & 0x7f) * Math.pow(2, shift);
-        if ((b & 0x80) === 0) break;
-        shift += 7;
-      }
-      return { value: val, nextIdx: idx };
-    }
-
     function downloadDwleFile() {
       const text = document.getElementById("sampleText").value || "";
       const dwle = computeDwleStream(text);
       const bitArr = dwle.bits;
-      const bitByteLen = Math.ceil(bitArr.length / 8);
-
-      const codePoints = [];
-      for (const ch of text) codePoints.push(ch.codePointAt(0));
-
-      const cpBytes = [];
-      cpBytes.push(...encodeVarUint(codePoints.length));
-      for (const cp of codePoints) {
-        cpBytes.push(...encodeVarUint(cp));
-      }
-
-      // Format: "DWL2" (4B) + bitCount (4B) + packed DWLE bits (bitByteLen) + lossless codepoints
-      const out = new Uint8Array(8 + bitByteLen + cpBytes.length);
-      out[0] = 0x44; out[1] = 0x57; out[2] = 0x4c; out[3] = 0x32;
+      const byteLen = Math.ceil(bitArr.length / 8);
+      const out = new Uint8Array(4 + byteLen);
       const total = bitArr.length;
-      out[4] = (total >>> 24) & 0xff;
-      out[5] = (total >>> 16) & 0xff;
-      out[6] = (total >>> 8) & 0xff;
-      out[7] = total & 0xff;
+      out[0] = (total >>> 24) & 0xff;
+      out[1] = (total >>> 16) & 0xff;
+      out[2] = (total >>> 8) & 0xff;
+      out[3] = total & 0xff;
 
       for (let i = 0; i < total; i++) {
         if (bitArr[i]) {
-          out[8 + (i >> 3)] |= (1 << (7 - (i & 7)));
+          out[4 + (i >> 3)] |= (1 << (7 - (i & 7)));
         }
       }
-      out.set(cpBytes, 8 + bitByteLen);
 
       const blob = new Blob([out], { type: "application/octet-stream" });
       triggerDownload(blob, "dwle-compressed.dwle");
@@ -398,35 +360,21 @@ W8 (8-bit):  [00001011 = A]</pre>
       const reader = new FileReader();
       reader.onload = function () {
         const arr = new Uint8Array(reader.result);
-        const isDwl2 = arr.length >= 8 && arr[0] === 0x44 && arr[1] === 0x57 && arr[2] === 0x4c && arr[3] === 0x32;
-        if (!isDwl2) {
+        if (arr.length < 4) {
           document.getElementById("resultBox").innerHTML =
-            `<strong>Decoder Notice:</strong> "${file.name}" (${arr.length} B) purane ya non-DWL2 binary format mein hai. Naya <strong>Download DWLE File</strong> se bani file chuno.`;
+            `<strong>Decoder Notice:</strong> "${file.name}" (${arr.length} B) valid .dwle file nahi lagti.`;
           event.target.value = "";
           return;
         }
 
-        const bitCount = (((arr[4] << 24) | (arr[5] << 16) | (arr[6] << 8) | arr[7]) >>> 0);
-        const bitByteLen = Math.ceil(bitCount / 8);
-        let pos = 8 + bitByteLen;
+        const bitCount = (((arr[0] << 24) | (arr[1] << 16) | (arr[2] << 8) | arr[3]) >>> 0);
+        const payloadBytes = Math.max(0, arr.length - 4);
+        const estBytes = Math.ceil(bitCount / 8);
 
-        const countRes = decodeVarUint(arr, pos);
-        const charCount = countRes.value;
-        pos = countRes.nextIdx;
-
-        const outChars = [];
-        for (let k = 0; k < charCount && pos < arr.length; k++) {
-          const cpRes = decodeVarUint(arr, pos);
-          outChars.push(String.fromCodePoint(cpRes.value));
-          pos = cpRes.nextIdx;
-        }
-
-        const decodedText = outChars.join("");
-        document.getElementById("sampleText").value = decodedText;
-        estimateBits();
-
-        document.getElementById("resultBox").innerHTML +=
-          ` | <strong>Decoded File:</strong> ${file.name} (${charCount} chars lossless restored, stream: ${bitCount} bits)`;
+        document.getElementById("resultBox").innerHTML =
+          `<strong>Decoded .DWLE Header:</strong> ${file.name} | ` +
+          `<strong>File Size:</strong> ${arr.length} B (payload: ${payloadBytes} B) | ` +
+          `<strong>Packed Bits:</strong> ${bitCount} bits (~${estBytes} B)`;
         event.target.value = "";
       };
       reader.readAsArrayBuffer(file);
