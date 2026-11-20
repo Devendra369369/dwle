@@ -319,7 +319,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         if (isOneShotJump) {
           const ctrlW = Math.min(curW, wHere);
           const nullBits = "0".repeat(ctrlW);
-          const jumpCodeVal = Math.min((1 << ctrlW) - 1, 11 + wHere);
+          const jumpCodeVal = Math.min((1 << ctrlW) - 1, 10 + wHere);
           const jumpBits = jumpCodeVal.toString(2).padStart(ctrlW, "0");
           readLines.push(`${nullBits}=${ctrlW}nullw`);
           readLines.push(`${jumpBits}=${ctrlW}w${jumpCodeVal}c${wHere}`);
@@ -327,7 +327,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         } else if (wHere !== curW) {
           const ctrlW = Math.min(curW, wHere);
           const nullBits = "0".repeat(ctrlW);
-          const wCodeVal = Math.min((1 << ctrlW) - 1, 11 + wHere);
+          const wCodeVal = Math.min((1 << ctrlW) - 1, 10 + wHere);
           const wCodeBits = wCodeVal.toString(2).padStart(ctrlW, "0");
           readLines.push(`${nullBits}=${ctrlW}nullw`);
           readLines.push(`${wCodeBits}=${ctrlW}w${wCodeVal}c${wHere}`);
