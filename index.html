@@ -299,7 +299,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       } else {
         offset = cp % 2097141;
       }
-      const codeVal = 11 + offset;
+      const codeVal = 10 + offset;
       return {
         bits: codeVal.toString(2).padStart(w, "0"),
         offset,
@@ -433,7 +433,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           }
           continue;
         }
-        const offset = num - 11;
+        const offset = Math.max(0, num - 10);
         const cp = decodeWindowOffset(offset, curW);
         let ch = "?";
         try { ch = String.fromCodePoint(cp); } catch (_) {}
@@ -486,7 +486,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           }
           continue;
         }
-        const offset = num - 11;
+        const offset = Math.max(0, num - 10);
         const cp = decodeWindowOffset(offset, curW);
         try {
           out.push(String.fromCodePoint(cp));
