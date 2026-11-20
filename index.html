@@ -259,14 +259,67 @@ W8 (8-bit):  [00001011 = A]</pre>
       0xff0e, 0xff1a, 0xff1b, 0xff1f, 0x201c, 0x201d, 0x2018, 0x2019
     ];
 
+    function isFrenchOrEuropeanLatin(cp) {
+      return (cp >= 0x0080 && cp <= 0x024f) || (cp >= 0x1e00 && cp <= 0x1eff);
+    }
+
+    function isUrduPersianArabic(cp) {
+      return (
+        (cp >= 0x0600 && cp <= 0x077f) ||
+        (cp >= 0x08a0 && cp <= 0x08ff) ||
+        (cp >= 0xfb50 && cp <= 0xfdff) ||
+        (cp >= 0xfe70 && cp <= 0xfeff)
+      );
+    }
+
+    // Detect exact language/script family & target window by character code point
+    function detectScriptInfo(cp) {
+      if (cp <= 0x7f) {
+        return { lang: "ASCII / English", w: 8, base: 0x0000 };
+      }
+      if (isFrenchOrEuropeanLatin(cp)) {
+        const base = cp >= 0x1e00 ? 0x1e00 : 0x0080;
+        return { lang: "French / European Latin", w: 9, base };
+      }
+      if (cp >= 0x0900 && cp <= 0x097f) {
+        return { lang: "Hindi / Devanagari", w: 10, base: 0x0900 };
+      }
+      if (cp >= 0x0980 && cp <= 0x0dff) {
+        return { lang: "Indic (Bengali/Tamil/Telugu/etc.)", w: 10, base: 0x0980 };
+      }
+      if (cp >= 0x1f300 && cp <= 0x1faff) {
+        return { lang: "Emoji / Symbols", w: 11, base: 0x1f300 };
+      }
+      if (CJK_PUNCT.includes(cp)) {
+        return { lang: "CJK Punctuation", w: 13, base: 0x3000 };
+      }
+      if (cp >= 0x4e00 && cp <= 0x6d65) {
+        return { lang: "Han / Chinese (W13)", w: 13, base: 0x4e00 };
+      }
+      if (isUrduPersianArabic(cp)) {
+        const base = cp >= 0xfb50 ? 0xfb50 : 0x0600;
+        return { lang: "Urdu / Farsi / Arabic", w: 17, base };
+      }
+      if (cp >= 0x0400 && cp <= 0x052f) {
+        return { lang: "Cyrillic", w: 17, base: 0x0400 };
+      }
+      if (cp >= 0x0370 && cp <= 0x03ff) {
+        return { lang: "Greek", w: 17, base: 0x0370 };
+      }
+      if (cp >= 0x3040 && cp <= 0x30ff) {
+        return { lang: "Japanese Kana", w: 17, base: 0x3040 };
+      }
+      if (cp >= 0xac00 && cp <= 0xd7af) {
+        return { lang: "Korean Hangul", w: 17, base: 0xac00 };
+      }
+      if (cp <= 0xffff) {
+        return { lang: "World BMP Script", w: 17, base: 0x0000 };
+      }
+      return { lang: "Supplementary Unicode", w: 21, base: 0x10000 };
+    }
+
     function getCharWindow(cp) {
-      if (cp <= 0x7f) return 8;                        // ~128 chars (ASCII -> W8)
-      if (cp >= 0x0900 && cp <= 0x0dff) return 10;      // ~128-char script blocks -> Hybrid W10
-      if (cp >= 0x1f300 && cp <= 0x1f9ff) return 11;    // Emojis & symbols -> W11
-      if (CJK_PUNCT.includes(cp)) return 13;            // CJK punct inside W13
-      if (cp >= 0x4e00 && cp <= 0x9fff) return 13;      // Han characters -> W13 primary (8,181 slots)
-      if (cp <= 0xffff) return 17;                      // Extended BMP scripts -> W17
-      return 21;                                        // Supplementary Unicode -> W21
+      return detectScriptInfo(cp).w;
     }
 
     function getDominantWindow(chars) {
@@ -288,51 +341,45 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     function getEffectiveWindow(cp, curW, dominantW) {
-      const wHere = getCharWindow(cp);
-      if ((curW === 10 || dominantW === 10) && cp <= 0x7f) return 10;
-      if ((curW === 13 || dominantW === 13) && (cp <= 0x7f || CJK_PUNCT.includes(cp))) return 13;
-      if ((curW === 17 || dominantW === 17) && (cp <= 0x7f || CJK_PUNCT.includes(cp))) return 17;
+      const info = detectScriptInfo(cp);
+      const wHere = info.w;
+      if (cp <= 0x7f) {
+        if (curW === 9 || dominantW === 9) return 9;
+        if (curW === 10 || dominantW === 10) return 10;
+        if (curW === 13 || dominantW === 13) return 13;
+        if (curW === 17 || dominantW === 17) return 17;
+      }
+      if (CJK_PUNCT.includes(cp) && (curW === 13 || dominantW === 13)) {
+        return 13;
+      }
       return wHere;
     }
 
     function encodeWindowCharBits(cp, w) {
+      const info = detectScriptInfo(cp);
       let offset = 0;
+
       if (w === 8) {
         offset = cp & 0x7f;
+      } else if (w === 9) {
+        offset = cp <= 0x7f ? cp : Math.min(501, 128 + (cp - 0x0080));
       } else if (w === 10) {
-        if (cp <= 0x7f) {
-          offset = cp;
-        } else if (cp >= 0x0900 && cp <= 0x097f) {
-          offset = 128 + (cp - 0x0900);
-        } else {
-          offset = 256 + (cp % 757);
-        }
+        offset = cp <= 0x7f ? cp : Math.min(1013, 128 + (cp - 0x0900));
       } else if (w === 11) {
-        offset = (cp >= 0x1f300) ? (cp - 0x1f300) % 2037 : (cp % 2037);
+        offset = Math.max(0, Math.min(2037, cp - 0x1f300));
       } else if (w === 13) {
         const pIdx = CJK_PUNCT.indexOf(cp);
         if (cp <= 0x7f) {
           offset = cp;
         } else if (pIdx !== -1) {
           offset = 128 + pIdx;
-        } else if (cp >= 0x4e00 && cp <= 0x9fff) {
-          offset = 256 + ((cp - 0x4e00) % 7925);
         } else {
-          offset = 256 + (cp % 7925);
+          offset = Math.max(256, Math.min(8181, 256 + (cp - 0x4e00)));
         }
       } else if (w === 17) {
-        const pIdx = CJK_PUNCT.indexOf(cp);
-        if (cp <= 0x7f) {
-          offset = cp;
-        } else if (pIdx !== -1) {
-          offset = 128 + pIdx;
-        } else if (cp >= 0x4e00 && cp <= 0x9fff) {
-          offset = 256 + (cp - 0x4e00);
-        } else {
-          offset = 21248 + (cp % 109813);
-        }
+        offset = Math.max(0, Math.min(131061, cp));
       } else {
-        offset = cp % 2097141;
+        offset = Math.max(0, Math.min(2097141, cp));
       }
 
       const level = Math.floor(offset / 127) + 1;
@@ -341,31 +388,38 @@ W8 (8-bit):  [00001011 = A]</pre>
         bits: codeVal.toString(2).padStart(w, "0"),
         offset,
         level,
-        codeVal
+        codeVal,
+        lang: info.lang
       };
     }
 
     function decodeWindowOffset(offset, w) {
       if (w === 8) {
         return offset & 0x7f;
+      } else if (w === 9) {
+        return offset < 128 ? offset : 0x0080 + (offset - 128);
       } else if (w === 10) {
-        if (offset < 128) return offset;
-        if (offset < 256) return 0x0900 + (offset - 128);
-        return offset;
+        return offset < 128 ? offset : 0x0900 + (offset - 128);
       } else if (w === 11) {
         return 0x1f300 + offset;
       } else if (w === 13) {
         if (offset < 128) return offset;
         if (offset >= 128 && offset < 128 + CJK_PUNCT.length) return CJK_PUNCT[offset - 128];
-        if (offset >= 256) return 0x4e00 + (offset - 256);
-        return offset;
-      } else if (w === 17) {
-        if (offset < 128) return offset;
-        if (offset >= 128 && offset < 128 + CJK_PUNCT.length) return CJK_PUNCT[offset - 128];
-        if (offset >= 256 && offset < 256 + (0x9fff - 0x4e00 + 1)) return 0x4e00 + (offset - 256);
+        return 0x4e00 + (offset - 256);
+      } else if (w === 17 || w === 21) {
         return offset;
       }
       return offset;
+    }
+
+    function describeWindowLanguage(w) {
+      if (w === 8) return "ASCII / English";
+      if (w === 9) return "French / European Latin";
+      if (w === 10) return "Hindi / Devanagari / Indic";
+      if (w === 11) return "Emoji / Symbols";
+      if (w === 13) return "Han / CJK";
+      if (w === 17) return "Urdu / Farsi / Arabic / Cyrillic / BMP";
+      return "Supplementary Unicode";
     }
 
     function computeDwleStream(text) {
@@ -384,15 +438,38 @@ W8 (8-bit):  [00001011 = A]</pre>
       const dominantW = getDominantWindow(chars);
       let curW = 8;
       const bits = [];
-      const flowLines = [`Dominant Window: W${dominantW}`]; const readLines = []; const tokenSegments = [];  for (let i = 0; i < chars.length; i++) { const ch = chars[i]; const cp = ch.codePointAt(0); const wHere = getEffectiveWindow(cp, curW, dominantW);  if (wHere !== curW) { const nullBits = "0".repeat(curW); const wCodeVal = 10 + wHere; const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");  for (const c of (nullBits + wCodeBits)) bits.push(Number(c)); readLines.push(`${nullBits}=${curW}nullw`); readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`); tokenSegments.push({ bits: nullBits + wCodeBits, label: `switch->W${wHere}` });
-          flowLines.push(`Switch W${curW} -> W${wHere} (${curW * 2} bits)`);
+      const detectedLangs = new Set();
+      const flowLines = [];
+      const readLines = [];
+      const tokenSegments = [];
+
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const cp = ch.codePointAt(0);
+        const info = detectScriptInfo(cp);
+        detectedLangs.add(info.lang);
+        const wHere = getEffectiveWindow(cp, curW, dominantW);
+
+        if (wHere !== curW) {
+          const nullBits = "0".repeat(curW);
+          const wCodeVal = 10 + wHere;
+          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
+
+          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
+          readLines.push(`${nullBits}=${curW}nullw`);
+          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
+          tokenSegments.push({ bits: nullBits + wCodeBits, label: `switch->W${wHere}(${describeWindowLanguage(wHere)})` });
+          flowLines.push(`Switch W${curW} -> W${wHere} [${describeWindowLanguage(wHere)}]`);
           curW = wHere;
         }
 
         const enc = encodeWindowCharBits(cp, curW);
         for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`); tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
       }
+
+      flowLines.unshift(`Languages: ${[...detectedLangs].join(", ")} | Dominant: W${dominantW}`);
 
       return {
         totalBits: bits.length,
