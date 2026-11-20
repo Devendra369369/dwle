@@ -176,19 +176,24 @@
     </section>
 
     <section>
-      <h2>Live Bit Estimator (UTF-8 vs DWLE Window Estimate)</h2>
-      <p>Yahan koi bhi text likh kar UTF-8 aur estimated DWLE bit usage compare karo:</p>
-      <textarea id="sampleText" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" oninput="estimateBits()" placeholder="Yahan Hindi, English, ya Chinese text likho...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
+      <h2>Live Bit Estimator &amp; File Exporter (UTF-8 vs DWLE)</h2>
+      <p>Yahan 1 KB ya usse bada koi bhi text likho, compress/calculate karo, aur Unicode (UTF-8) ya DWLE file download karo:</p>
+      <textarea id="sampleText" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" oninput="estimateBits()" placeholder="Yahan Hindi, English, ya mixed text likho (1 KB se bada bhi chalega)...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
-        <button type="button" onclick="estimateBits()">Bits Calculate Karo</button>
+        <button type="button" onclick="estimateBits()">Compress &amp; Calculate</button>
+        <button type="button" onclick="fillHindi1KB()" style="background:#1e3a5f; color:#e2e8f0;">1 KB Hindi Sample</button>
         <button type="button" onclick="clearSample()" style="background:#334155; color:#f8fafc;">Clear</button>
       </div>
-      <div class="out-box" id="resultBox">Upar "Bits Calculate Karo" par click karo.</div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
+        <button type="button" onclick="downloadUnicodeFile()" style="background:#0f766e; color:#f8fafc;">Download Unicode (UTF-8) File</button>
+        <button type="button" onclick="downloadDwleFile()" style="background:#7c3aed; color:#f8fafc;">Download DWLE File</button>
+      </div>
+      <div class="out-box" id="resultBox">Upar "Compress &amp; Calculate" par click karo.</div>
     </section>
 
     <section>
-      <h2>Visual Flow: W8 &rarr; W9 &rarr; W8</h2>
-      <pre>W8 (8-bit):  [00001011 = A] -> [00000000 = NULL] -> [00010011 = wcode 9]
+      <h2>Visual Flow (Dominant Window + One-Shot Jump + Min-Width Switch)</h2>
+      <pre id="visualFlowBox">W8 (8-bit):  [00001011 = A] -> [00000000 = NULL] -> [00010011 = wcode 9]
 W9 (9-bit):  [000001011 = क] -> [000000000 = NULL] -> [000010010 = wcode 8]
 W8 (8-bit):  [00001011 = A]</pre>
     </section>
@@ -199,38 +204,153 @@ W8 (8-bit):  [00001011 = A]</pre>
   </div>
 
   <script>
+    function getCharWindow(cp) {
+      if (cp <= 0x7f) return 8;
+      if (cp >= 0x0900 && cp <= 0x097f) return 10;
+      if (cp >= 0x1f300 && cp <= 0x1faff) return 11;
+      if (cp >= 0x4e00 && cp <= 0x9fff) return 17;
+      return 21;
+    }
+
+    function getDominantWindow(chars) {
+      const counts = new Map();
+      for (const ch of chars) {
+        const w = getCharWindow(ch.codePointAt(0));
+        counts.set(w, (counts.get(w) || 0) + 1);
+      }
+      let bestW = 8;
+      let bestCount = -1;
+      for (const [w, c] of counts.entries()) {
+        if (c > bestCount) {
+          bestCount = c;
+          bestW = w;
+        }
+      }
+      return bestW;
+    }
+
+    function computeDwleStream(text) {
+      const chars = [...text];
+      if (chars.length === 0) {
+        return { totalBits: 0, bits: [], dominantW: 8, flowLines: ["Empty text"] };
+      }
+
+      const dominantW = getDominantWindow(chars);
+      let curW = 8;
+      const bits = [];
+      const flowLines = [`Dominant Window: W${dominantW}`];
+
+      let i = 0;
+      while (i < chars.length) {
+        const wHere = getCharWindow(chars[i].codePointAt(0));
+        const wNext = (i + 1 < chars.length) ? getCharWindow(chars[i + 1].codePointAt(0)) : dominantW;
+
+        const isOneShotJump = (wHere !== curW) && (wHere !== dominantW) && (wNext === dominantW);
+
+        if (isOneShotJump) {
+          const ctrlW = Math.min(curW, wHere);
+          for (let b = 0; b < ctrlW * 2 + 1; b++) bits.push(0);
+          const val = (chars[i].codePointAt(0) % Math.max(1, (1 << wHere) - 11)) + 11;
+          for (let b = wHere - 1; b >= 0; b--) bits.push((val >> b) & 1);
+          flowLines.push(`1-Shot Jump W${wHere} (ctrl ${ctrlW}b): [${chars[i]}] -> stay/return W${curW}`);
+          i += 1;
+          continue;
+        }
+
+        if (wHere !== curW) {
+          const ctrlW = Math.min(curW, wHere);
+          for (let b = 0; b < ctrlW * 2; b++) bits.push(0);
+          flowLines.push(`Switch W${curW} -> W${wHere} using ${ctrlW}-bit ctrl (${ctrlW * 2} bits)`);
+          curW = wHere;
+        }
+
+        const val = (chars[i].codePointAt(0) % Math.max(1, (1 << curW) - 11)) + 11;
+        for (let b = curW - 1; b >= 0; b--) bits.push((val >> b) & 1);
+        i += 1;
+      }
+
+      return {
+        totalBits: bits.length,
+        bits,
+        dominantW,
+        flowLines: flowLines.slice(0, 12)
+      };
+    }
+
     function estimateBits() {
       const text = document.getElementById("sampleText").value || "";
       const utf8Bytes = new TextEncoder().encode(text).length;
       const utf8Bits = utf8Bytes * 8;
-
-      let dwleBits = 0;
-      let curW = 8;
-
-      for (const ch of text) {
-        const cp = ch.codePointAt(0);
-        let targetW = 21;
-        if (cp <= 0x7f) targetW = 8;
-        else if (cp >= 0x0900 && cp <= 0x097f) targetW = 10;
-        else if (cp >= 0x1f300 && cp <= 0x1faff) targetW = 11;
-        else if (cp >= 0x4e00 && cp <= 0x9fff) targetW = 17;
-
-        if (targetW !== curW) {
-          dwleBits += curW * 2; // null + wcode in current width
-          curW = targetW;
-        }
-        dwleBits += curW;
-      }
+      const dwle = computeDwleStream(text);
+      const dwleBits = dwle.totalBits;
+      const dwleBytes = Math.ceil(dwleBits / 8);
 
       const diff = utf8Bits - dwleBits;
       const pct = utf8Bits > 0 ? ((diff / utf8Bits) * 100).toFixed(2) : "0.00";
 
       document.getElementById("resultBox").innerHTML =
         `<strong>Characters:</strong> ${[...text].length} | ` +
-        `<strong>UTF-8:</strong> ${utf8Bits} bits | ` +
-        `<strong>DWLE (est.):</strong> ${dwleBits} bits | ` +
+        `<strong>UTF-8:</strong> ${utf8Bytes} B (${utf8Bits} bits) | ` +
+        `<strong>DWLE:</strong> ${dwleBytes} B (${dwleBits} bits) | ` +
         `<strong>Bachat:</strong> ${pct}% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
+
+      document.getElementById("visualFlowBox").textContent = dwle.flowLines.join("\n");
     }
+
+    function fillHindi1KB() {
+      const base = "भारत एक विशाल और विविध देश है जहाँ अलग-अलग भाषाएँ, बोलियाँ और संस्कृतियाँ साथ मिलकर रहती हैं। हिंदी हमारी प्रमुख भाषा है और इसका प्रयोग शिक्षा, साहित्य तथा दैनिक संवाद में व्यापक रूप से होता है। ";
+      let out = "";
+      const enc = new TextEncoder();
+      while (enc.encode(out).length < 1024) {
+        out += base;
+      }
+      while (enc.encode(out).length > 1035 && out.length > 1) {
+        out = out.slice(0, -1);
+      }
+      document.getElementById("sampleText").value = out;
+      estimateBits();
+    }
+
+    function triggerDownload(blob, filename) {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function downloadUnicodeFile() {
+      const text = document.getElementById("sampleText").value || "";
+      const bytes = new TextEncoder().encode(text);
+      const blob = new Blob([bytes], { type: "application/octet-stream" });
+      triggerDownload(blob, "dwle-unicode-utf8.bin");
+    }
+
+    function downloadDwleFile() {
+      const text = document.getElementById("sampleText").value || "";
+      const dwle = computeDwleStream(text);
+      const bitArr = dwle.bits;
+      const byteLen = Math.ceil(bitArr.length / 8);
+      const out = new Uint8Array(4 + byteLen);
+      const total = bitArr.length;
+      out[0] = (total >>> 24) & 0xff;
+      out[1] = (total >>> 16) & 0xff;
+      out[2] = (total >>> 8) & 0xff;
+      out[3] = total & 0xff;
+
+      for (let i = 0; i < total; i++) {
+        if (bitArr[i]) {
+          out[4 + (i >> 3)] |= (1 << (7 - (i & 7)));
+        }
+      }
+
+      const blob = new Blob([out], { type: "application/octet-stream" });
+      triggerDownload(blob, "dwle-compressed.dwle");
+    }
+
     function clearSample() {
       const box = document.getElementById("sampleText");
       box.value = "";
