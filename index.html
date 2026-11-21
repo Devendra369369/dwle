@@ -592,7 +592,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         const ch = chars[i];
         const isBara = typeof isBarakhadiUnit === "function" && isBarakhadiUnit(ch);
         const cp = isBara ? (10000 + getBarakhadiOrd(ch)) : ch.codePointAt(0);
-        const targetW = (isBara || (curW === 10 && cp <= 0x7f)) ? 10 : getCharWindow(cp);
+        const targetW = (isBara || (cp <= 0x7f && (curW === 10 || chars.some(u => (typeof isBarakhadiUnit === 'function' && isBarakhadiUnit(u)) || (u.codePointAt(0) >= 0x0900 && u.codePointAt(0) <= 0x097f))))) ? 10 : getCharWindow(cp);
 
         if (targetW !== curW) {
           if (targetW === defW && curW !== defW) {
@@ -652,7 +652,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         }
 
         for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${slotBits}=${curW}w${curN}L${curL}=${ch}(slot:${enc.slot},tok:${enc.tokenVal})`);
+        readLines.push(`${enc.bits}=${curW}w${curN}L${curL}=${ch}(slot:${enc.slot},tok:${enc.tokenVal})`);
         tokenSegments.push({ bits: enc.bits, label: `${curW}wL${curL}:${ch}` });
       }
 
@@ -1136,7 +1136,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         }
 
         for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${slotBits}=${curW}w${curN}L${curL}=${ch}(slot:${enc.slot},tok:${enc.tokenVal})`);
+        readLines.push(`${enc.bits}=${curW}w${curN}L${curL}=${ch}(slot:${enc.slot},tok:${enc.tokenVal})`);
         tokenSegments.push({ bits: enc.bits, label: `${curW}wL${curLevel}:${ch}` });
       }
 
