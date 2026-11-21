@@ -498,7 +498,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       let idx0 = 0;
 
       if (cp >= 10000 && cp < 20000) {
-        idx0 = cp; // already 10000 + ord
+        idx0 = cp;
       } else if (cp >= 0x0900 && cp <= 0x097F) {
         idx0 = 128 + (cp - 0x0900);
       } else if (cp < 128) {
@@ -508,7 +508,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       }
 
       const level = Math.floor(idx0 / cap) + 1;
-      const slot = (idx0 % cap) + 1; // slot 1 -> token 14, slot 2 -> token 15 ...
+      const slot = (idx0 % cap) + 1;
       const tokenVal = 13 + slot;
       return {
         bits: tokenVal.toString(2).padStart(w, "0"),
@@ -525,7 +525,7 @@ W8 (8-bit):  [00001011 = A]</pre>
 
       if (idx0 >= 10000 && idx0 < 20000) {
         const ord = idx0 - 10000;
-        if (ORD_IDX_TO_SYL.has(ord)) {
+        if (typeof ORD_IDX_TO_SYL !== "undefined" && ORD_IDX_TO_SYL.has(ord)) {
           return ORD_IDX_TO_SYL.get(ord);
         }
       }
@@ -589,8 +589,9 @@ W8 (8-bit):  [00001011 = A]</pre>
 
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
-        const cp = isW10BarakhadiUnit(ch) ? getW10UnitCode(ch) : (ch.length > 1 ? getUnitCodePointOrId(ch) : ch.codePointAt(0));
-        const targetW = isW10BarakhadiUnit(ch) ? (curW === 9 ? 9 : 10) : (ch.length > 1 ? getUnitWindow(ch) : getCharWindow(cp));
+        const isBara = typeof isBarakhadiUnit === "function" && isBarakhadiUnit(ch);
+        const cp = isBara ? (10000 + getBarakhadiOrd(ch)) : ch.codePointAt(0);
+        const targetW = isBara ? (curW === 10 ? 10 : 9) : getCharWindow(cp);
 
         if (targetW !== curW) {
           if (targetW === defW && curW !== defW) {
@@ -716,8 +717,8 @@ W8 (8-bit):  [00001011 = A]</pre>
         } else if (tok === 1) {
           // 1 - 1 = 0 -> Level code
           const nextL = readControlNumber(curW);
-          if (nextL !== null && nextL >= 1) {
-            curL = nextL;
+          if (nextL !== null) {
+            curL = nextL >= 1 ? nextL : 1;
           }
         } else if (tok >= 2 && tok <= 10) {
           // 2..10 -> 1..9 -> Nested code
@@ -1313,9 +1314,13 @@ W8 (8-bit):  [00001011 = A]</pre>
 
       let best = candidates[0];
       for (let i = 1; i < candidates.length; i++) {
-        if (candidates[i].res.totalBits < best.res.totalBits) {
+        const candDec = decodeDwleBits(candidates[i].res.bits.join(""));
+        if (candDec === text && candidates[i].res.totalBits < best.res.totalBits) {
           best = candidates[i];
         }
+      }
+      if (decodeDwleBits(best.res.bits.join("")) !== text) {
+        best = candidates[0];
       }
 
       const domW = getDominantWindow(units);
