@@ -615,6 +615,75 @@ W8 (8-bit):  [00001011 = A]</pre>
       return out;
     }
 
+    function encodeW5Control(val) {
+      const clamped = Math.max(0, Math.min(31, Number(val) || 0));
+      return clamped.toString(2).padStart(5, "0");
+    }
+
+    function getActiveComposerBits() {
+      const binEl = document.getElementById("binaryInput") || document.getElementById("bitInput");
+      if (binEl && binEl.value && binEl.value.replace(/[^01]/g, "").length > 0) {
+        return binEl.value.replace(/[^01]/g, "");
+      }
+      const sampleEl = document.getElementById("sampleText");
+      const text = sampleEl ? (sampleEl.value || "") : "";
+      if (!text) return "";
+      return computeSmartJumpStream(text).bits.join("");
+    }
+
+    function setComposerBits(bitStr, labelInfo) {
+      const binEl = document.getElementById("binaryInput") || document.getElementById("bitInput");
+      if (binEl) binEl.value = bitStr;
+      const readBox = document.getElementById("readBox") || document.getElementById("tokenLinesBox");
+      if (readBox && labelInfo) {
+        readBox.textContent = Array.isArray(labelInfo) ? labelInfo.join("\n") : String(labelInfo);
+      }
+    }
+
+    function estimateBits() {
+      const sampleEl = document.getElementById("sampleText");
+      const text = sampleEl ? (sampleEl.value || "") : "";
+      const normalDwle = computeDwleStream(text);
+      const smartDwle = computeSmartJumpStream(text);
+      const utf8Bits = new TextEncoder().encode(text).length * 8;
+      const savedVsUtf8 = utf8Bits - normalDwle.totalBits;
+
+      const bitStr = normalDwle.bits.join("");
+      setComposerBits(bitStr, normalDwle.readLines);
+
+      const resEl = document.getElementById("resultBox");
+      if (resEl) {
+        resEl.innerHTML =
+          `<strong>DWLE Total:</strong> ${normalDwle.totalBits} bits | ` +
+          `<strong>Smart Jump:</strong> ${smartDwle.totalBits} bits | ` +
+          `<strong>UTF-8:</strong> ${utf8Bits} bits | ` +
+          `<strong>Bachat vs UTF-8:</strong> ${savedVsUtf8} bits`;
+      }
+
+      const flowEl = document.getElementById("visualFlowBox");
+      if (flowEl) {
+        flowEl.textContent = normalDwle.flowLines.join("\n");
+      }
+    }
+
+    function decodeBinaryToText() {
+      const rawBits = getActiveComposerBits();
+      if (!rawBits) {
+        const resEl = document.getElementById("resultBox");
+        if (resEl) resEl.textContent = "Decode karne ke liye pehle 0/1 bits ya text daalo.";
+        return;
+      }
+      const decoded = decodeDwleBits(rawBits);
+      const sampleEl = document.getElementById("sampleText");
+      if (sampleEl) sampleEl.value = decoded;
+
+      const resEl = document.getElementById("resultBox");
+      if (resEl) {
+        resEl.innerHTML = `<strong>Decoded Text (${rawBits.length} bits):</strong> ${decoded.replace(/</g, "&lt;")}`;
+      }
+    }
+
+
     function evalW5JumpCandidate(chars) {
       let curW = 8;
       let curLevel = 1;
