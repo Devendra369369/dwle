@@ -499,18 +499,18 @@ W8 (8-bit):  [00001011 = A]</pre>
       const cap = getWindowCharCapacity(w);
       let idx0 = 0;
 
-      if (w === 8) {
+      if (cp >= 2000 && cp < 5000) {
+        idx0 = cp;
+      } else if (w === 8) {
         idx0 = cp < cap ? cp : 63;
       } else if (w === 9 || w === 10) {
         if (cp >= 0x0900 && cp <= 0x097F) {
-          idx0 = cp - 0x0900;       // 0..127
+          idx0 = cp - 0x0900;
         } else if (cp < 128) {
-          idx0 = 128 + cp;          // 128..255
+          idx0 = 128 + cp;
         } else {
-          idx0 = 256 + cp;          // 256+ (uses level >= 1 cleanly)
+          idx0 = 256 + cp;
         }
-      } else if (cp >= 2000 && cp < 5000) {
-        idx0 = cp;
       } else {
         idx0 = cp;
       }
