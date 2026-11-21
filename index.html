@@ -509,6 +509,8 @@ W8 (8-bit):  [00001011 = A]</pre>
         } else {
           idx0 = 256 + cp;          // 256+ (uses level >= 1 cleanly)
         }
+      } else if (cp >= 2000 && cp < 5000) {
+        idx0 = cp;
       } else {
         idx0 = cp;
       }
