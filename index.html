@@ -495,6 +495,8 @@ W8 (8-bit):  [00001011 = A]</pre>
       return getCharWindow(cp);
     }
 
+    const IDX0_TO_ENCODED_VAL = new Map();
+
     function encodeWindowCharBits(cp, w) {
       const cap = getWindowCharCapacity(w);
       let idx0 = 0;
@@ -508,6 +510,8 @@ W8 (8-bit):  [00001011 = A]</pre>
       } else {
         idx0 = 5000 + cp;
       }
+
+      IDX0_TO_ENCODED_VAL.set(idx0, cp);
 
       const level = Math.floor(idx0 / cap) + 1;
       const slot = (idx0 % cap) + 1;
@@ -525,25 +529,21 @@ W8 (8-bit):  [00001011 = A]</pre>
       const cap = getWindowCharCapacity(w);
       const idx0 = (level - 1) * cap + (slot - 1);
 
-      if (idx0 >= 2000 && idx0 < 5000) {
-        if (typeof W10_BARAKHADI_CODE_TO_SYL !== "undefined" && W10_BARAKHADI_CODE_TO_SYL.has(idx0)) {
-          return W10_BARAKHADI_CODE_TO_SYL.get(idx0);
-        }
-        if (typeof ID_TO_BARAKHADI !== "undefined" && ID_TO_BARAKHADI.has(idx0)) {
-          return ID_TO_BARAKHADI.get(idx0);
-        }
+      const val = IDX0_TO_ENCODED_VAL.has(idx0)
+        ? IDX0_TO_ENCODED_VAL.get(idx0)
+        : (idx0 >= 2000 && idx0 < 5000
+            ? idx0
+            : (idx0 >= 128 && idx0 < 256
+                ? 0x0900 + (idx0 - 128)
+                : (idx0 >= 5000 ? idx0 - 5000 : idx0)));
+
+      if (typeof W10_BARAKHADI_CODE_TO_SYL !== "undefined" && W10_BARAKHADI_CODE_TO_SYL.has(val)) {
+        return W10_BARAKHADI_CODE_TO_SYL.get(val);
       }
-      if (idx0 >= 128 && idx0 < 256) {
-        return String.fromCodePoint(0x0900 + (idx0 - 128));
+      if (typeof ID_TO_BARAKHADI !== "undefined" && ID_TO_BARAKHADI.has(val)) {
+        return ID_TO_BARAKHADI.get(val);
       }
-      if (idx0 >= 0 && idx0 < 128) {
-        return String.fromCodePoint(idx0);
-      }
-      if (idx0 >= 5000) {
-        const origCp = idx0 - 5000;
-        return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, origCp)));
-      }
-      return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
+      return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, val)));
     }
 
     function buildControlSequence(targetNum, w) {
