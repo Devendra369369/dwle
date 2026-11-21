@@ -228,6 +228,93 @@ W8 (8-bit):  [00001011 = A]</pre>
   </div>
 
   <script>
+    const DEVANAGARI_CONSONANTS = new Set([
+      "क","ख","ग","घ","ङ","च","छ","ज","झ","ञ","ट","ठ","ड","ढ","ण",
+      "त","थ","द","ध","न","प","फ","ब","भ","म","य","र","ल","व",
+      "श","ष","स","ह","क़","ख़","ग़","ज़","ड़","ढ़","फ़","य़"
+    ]);
+
+    const DEVANAGARI_COMBINERS = new Set([
+      "ा","ि","ी","ु","ू","ृ","ॄ","ॅ","ॆ","े","ै","ॉ","ॊ","ो","ौ",
+      "्","ं","ः","ँ","़"
+    ]);
+
+    function tokenizeDwleUnits(text) {
+      const cps = [...text];
+      const units = [];
+      let i = 0;
+      while (i < cps.length) {
+        const ch = cps[i];
+        if (DEVANAGARI_CONSONANTS.has(ch) && i + 1 < cps.length && DEVANAGARI_COMBINERS.has(cps[i + 1])) {
+          let unit = ch;
+          i += 1;
+          while (i < cps.length && DEVANAGARI_COMBINERS.has(cps[i])) {
+            unit += cps[i];
+            i += 1;
+          }
+          units.push(unit);
+        } else {
+          units.push(ch);
+          i += 1;
+        }
+      }
+      return units;
+    }
+
+    function encodeBarakhadiUnitId(unit) {
+      if (DEVANAGARI_CONSONANTS.has(unit[0]) && unit.length > 1) {
+        let h = 0;
+        for (const ch of unit) {
+          h = (h * 131 + ch.codePointAt(0)) % 900;
+        }
+        return 1000 + h; // 1000..1899 -> Barakhadi syllable IDs
+      }
+      return unit.codePointAt(0);
+    }
+
+    function decodeBarakhadiUnitId(id, w, level, slot) {
+      if (id >= 1000 && id < 1900) {
+        const idx = id - 1000;
+        const consList = [...DEVANAGARI_CONSONANTS];
+        const matraList = ["", "ा", "ि", "ी", "ु", "ू", "े", "ै", "ो", "ौ", "ं", "ः", "्"];
+        let c = 0;
+        for (let ci = 0; ci < consList.length; ci++) {
+          for (let mi = 0; mi < matraList.length; mi++) {
+            const cand = consList[ci] + matraList[mi];
+            let h = 0;
+            for (const ch of cand) h = (h * 131 + ch.codePointAt(0)) % 900;
+            if (1000 + h === id) return cand;
+            c++;
+          }
+        }
+      }
+      return String.fromCodePoint(id);
+    }
+    let __dwleLastBarakhadiDict = new Map();
+
+    function getUnitCodePointOrId(unit) {
+      if (DEVANAGARI_CONSONANTS.has(unit[0]) && unit.length > 1) {
+        let h = 0;
+        for (const ch of unit) {
+          h = (h * 131 + ch.codePointAt(0)) % 900;
+        }
+        const id = 1000 + h;
+        __dwleLastBarakhadiDict.set(id, unit);
+        return id;
+      }
+      return unit.codePointAt(0);
+    }
+
+    function getUnitWindow(unit) {
+      const id = getUnitCodePointOrId(unit);
+      if (id <= 0x7f) return 8;
+      if (id >= 1000 && id < 1900) return 9; // W9: Barakhadi syllable single token
+      if (id >= 0x0900 && id <= 0x097f) return 10;
+      if (id >= 0x1f300 && id <= 0x1faff) return 11;
+      if (id >= 0x4e00 && id <= 0x9fff) return 17;
+      return 21;
+    }
+
     function getCharWindow(cp) {
       if (cp <= 0x7f) return 8;
       if (cp >= 0x0900 && cp <= 0x097f) return 10;
@@ -418,7 +505,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       const cap = getWindowCharCapacity(w);
       const idx0 = (level - 1) * cap + (slot - 1);
       if (w === 8) {
-        return String.fromCodePoint(idx0);
+        return (idx0 >= 1000 && idx0 < 1900 && __dwleLastBarakhadiDict.has(idx0)) ? __dwleLastBarakhadiDict.get(idx0) : String.fromCodePoint(idx0);
       } else if (w === 9 || w === 10) {
         if (idx0 < 128) {
           return String.fromCodePoint(0x0900 + idx0);
@@ -461,7 +548,7 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     function computeDwleStream(text) {
-      const chars = [...text];
+      const chars = tokenizeDwleUnits(text);
       let curW = 8;
       let curL = 1;
       let curN = 1;
@@ -477,8 +564,8 @@ W8 (8-bit):  [00001011 = A]</pre>
 
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
-        const cp = ch.codePointAt(0);
-        const targetW = getCharWindow(cp);
+        const cp = ch.length > 1 ? getUnitCodePointOrId(ch) : ch.codePointAt(0);
+        const targetW = ch.length > 1 ? getUnitWindow(ch) : getCharWindow(cp);
 
         if (targetW !== curW) {
           if (targetW === defW && curW !== defW) {
@@ -1144,7 +1231,7 @@ W8 (8-bit):  [00001011 = A]</pre>
 
     function computeSmartJumpStream(text) {
       const normalStream = computeDwleStream(text);
-      const chars = [...text];
+      const chars = tokenizeDwleUnits(text);
       if (chars.length === 0) return normalStream;
 
       const freq = new Map();
