@@ -1292,7 +1292,7 @@ W8 (8-bit):  [00001011 = A]</pre>
 
           const slotBits = enc.bits;
           for (const c of slotBits) bits.push(Number(c));
-          readLines.push(`${slotBits}=${curW}wL${curL}^${curN}=${u}(slot:${enc.slot},tok:${enc.tokenVal})`);
+          readLines.push(`${slotBits}=${curW}w${curN}L${curL}=${u}(slot:${enc.slot},tok:${enc.tokenVal})`);
           tokenSegments.push({ bits: slotBits, label: `${curW}wL${curL}^${curN}:${u}` });
         }
       }
