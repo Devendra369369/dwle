@@ -592,7 +592,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         const ch = chars[i];
         const isBara = typeof isBarakhadiUnit === "function" && isBarakhadiUnit(ch);
         const cp = isBara ? (10000 + getBarakhadiOrd(ch)) : ch.codePointAt(0);
-        const targetW = (isBara || (cp <= 0x7f && (curW === 10 || chars.some(u => (typeof isBarakhadiUnit === 'function' && isBarakhadiUnit(u)) || (u.codePointAt(0) >= 0x0900 && u.codePointAt(0) <= 0x097f))))) ? 10 : getCharWindow(cp);
+        const targetW = (isBara || cp <= 0x7f || (cp >= 0x0900 && cp <= 0x097f)) ? 10 : getCharWindow(cp);
 
         if (targetW !== curW) {
           if (targetW === defW && curW !== defW) {
@@ -1300,45 +1300,125 @@ W8 (8-bit):  [00001011 = A]</pre>
       return { totalBits: bits.length, bits, readLines, tokenSegments, jumps };
     }
 
-    function computeSmartJumpStream(text) {
-      const normalStream = computeDwleStream(text);
-      const units = tokenizeDwleUnits(text);
-      if (units.length === 0) return normalStream;
+        function computeSmartJumpStream(text) {
+      const base = computeDwleStream(text);
+      const units = typeof segmentTextUnits === "function" ? segmentTextUnits(text) : Array.from(text);
+      if (!units.length) return { ...base, smartMeta: { chosenLabel: "Empty", candidates: [] } };
 
-      const candidates = [
-        { res: normalStream, label: "Normal DWLE (Start W8)" },
-        { res: evalBlockWindowStream(units, 100, null), label: "Smart Agent (100-unit W8/W9/W10 + L^n)" },
-        { res: evalBlockWindowStream(units, 1000, null), label: "Smart Agent (1000-unit W8/W9/W10 + L^n)" },
-        { res: evalBlockWindowStream(units, 100, 10), label: "Block-100 W10 Focus" },
-        { res: evalBlockWindowStream(units, 100, 9), label: "Block-100 W9 Focus" },
-        { res: evalBlockWindowStream(units, 100, 13), label: "Block-100 W13 (5k-8k+)" },
-        { res: evalBlockWindowStream(units, 100, 17), label: "Block-100 W17 (Full Unicode)" }
+      function runComboStream(allowedSet, forceStartW) {
+        let curW = 8;
+        let curL = 1;
+        let curN = 1;
+        const bits = [];
+        const readLines = [];
+        let jumps = 0;
+
+        function pushCtrl(seq, descPrefix) {
+          for (const item of seq) {
+            bits.push(item.bits);
+            readLines.push(`${item.bits}=${curW}w${descPrefix}:${item.desc}`);
+          }
+        }
+
+        if (forceStartW && forceStartW !== curW) {
+          pushCtrl(buildControlSequence(forceStartW - 10, curW), "WinTrig");
+          curW = forceStartW;
+          curL = 1;
+          jumps++;
+        }
+
+        for (let i = 0; i < units.length; i++) {
+          const u = units[i];
+          const isBara = typeof isBarakhadiUnit === "function" && isBarakhadiUnit(u);
+          const cp = isBara ? (10000 + getBarakhadiOrd(u)) : u.codePointAt(0);
+
+          let desiredW = curW;
+          if (allowedSet && allowedSet.size > 0) {
+            if (isBara) {
+              if (allowedSet.has(10)) desiredW = 10;
+              else if (allowedSet.has(9)) desiredW = 9;
+              else if (allowedSet.has(8)) desiredW = 8;
+            } else if (cp <= 0x7f) {
+              if (allowedSet.has(8) && !allowedSet.has(10)) desiredW = 8;
+              else if (allowedSet.has(10)) desiredW = 10;
+              else if (allowedSet.has(9)) desiredW = 9;
+              else if (allowedSet.has(8)) desiredW = 8;
+            } else {
+              const natW = getCharWindow(cp);
+              if (allowedSet.has(natW)) desiredW = natW;
+              else if (allowedSet.has(10)) desiredW = 10;
+              else if (allowedSet.has(9)) desiredW = 9;
+              else if (allowedSet.has(8)) desiredW = 8;
+              else desiredW = natW;
+            }
+          }
+
+          if (desiredW !== curW) {
+            if (desiredW === 8 && curW === 10 && cp <= 0x7f && allowedSet && allowedSet.has(10)) {
+              desiredW = 10;
+            }
+          }
+
+          if (desiredW !== curW) {
+            if (desiredW === 8) {
+              bits.push((11).toString(2).padStart(curW, "0"));
+              readLines.push(`${(11).toString(2).padStart(curW, "0")}=${curW}w11(WinDefault->W8)`);
+              curW = 8;
+              curL = 1;
+              jumps++;
+            } else {
+              bits.push("0".repeat(curW));
+              readLines.push(`${"0".repeat(curW)}=${curW}null(WinTrig)`);
+              const seq = buildControlSequence(desiredW - 10, curW);
+              pushCtrl(seq, `Target=${11 + (desiredW - 10)}->W${desiredW}`);
+              curW = desiredW;
+              curL = 1;
+              jumps++;
+            }
+          }
+
+          const enc = encodeWindowCharBits(cp, curW);
+          if (enc.level !== curL) {
+            bits.push((1).toString(2).padStart(curW, "0"));
+            readLines.push(`${${curW}}w1(0=LvlTrig)`);
+            const lSeq = buildControlSequence(enc.level - 1, curW);
+            pushCtrl(lSeq, `Lvl=${11 + (enc.level - 1)}->L${enc.level}`);
+            curL = enc.level;
+          }
+
+          bits.push(enc.bits);
+          readLines.push(`${enc.bits}=${curW}w${curN}L${curL}=${u}(slot:${enc.slot},tok:${enc.tokenVal})`);
+        }
+
+        const totalBits = bits.reduce((acc, b) => acc + b.length, 0);
+        return { bits, readLines, totalBits, jumps };
+      }
+
+      const combos = [
+        { label: "W10 Only", res: runComboStream(new Set([10]), 10) },
+        { label: "W8 Only", res: runComboStream(new Set([8]), 8) },
+        { label: "W9 Only", res: runComboStream(new Set([9]), 9) },
+        { label: "W8+10", res: runComboStream(new Set([8, 10]), 10) },
+        { label: "W9+10", res: runComboStream(new Set([9, 10]), 10) },
+        { label: "W8+9", res: runComboStream(new Set([8, 9]), 9) },
+        { label: "W8+9+10", res: runComboStream(new Set([8, 9, 10]), 10) },
+        { label: "Default Stream", res: base }
       ];
 
-      let best = candidates[0];
-      for (let i = 1; i < candidates.length; i++) {
-        const candDec = decodeDwleBits(candidates[i].res.bits.join(""));
-        if (candDec === text && candidates[i].res.totalBits < best.res.totalBits) {
-          best = candidates[i];
+      let best = combos[0];
+      for (const c of combos) {
+        if (c.res && typeof c.res.totalBits === "number" && c.res.totalBits < best.res.totalBits) {
+          best = c;
         }
       }
-      if (decodeDwleBits(best.res.bits.join("")) !== text) {
-        best = candidates[0];
-      }
-
-      const domW = getDominantWindow(units);
-      const jumpList = best.res.jumps && best.res.jumps.length ? best.res.jumps : ["Lowest bit window path selected"];
 
       return {
-        totalBits: best.res.totalBits,
-        bits: best.res.bits,
-        dominantW: domW,
-        flowLines: [
-          `${best.label} | ${best.res.totalBits} bits (UTF-8: ${new TextEncoder().encode(text).length * 8} bits)`,
-          ...jumpList
-        ].slice(0, 14),
-        readLines: best.res.readLines,
-        tokenSegments: best.res.tokenSegments
+        ...best.res,
+        smartMeta: {
+          chosenLabel: best.label,
+          savedVsBase: base.totalBits - best.res.totalBits,
+          candidates: combos.map(c => ({ label: c.label, bits: c.res.totalBits }))
+        }
       };
     }
 
