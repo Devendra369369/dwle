@@ -228,16 +228,32 @@ W8 (8-bit):  [00001011 = A]</pre>
   </div>
 
   <script>
-    const DEVANAGARI_CONSONANTS = new Set([
+    const BARAKHADI_CONSONANTS = [
       "क","ख","ग","घ","ङ","च","छ","ज","झ","ञ","ट","ठ","ड","ढ","ण",
       "त","थ","द","ध","न","प","फ","ब","भ","म","य","र","ल","व",
       "श","ष","स","ह","क़","ख़","ग़","ज़","ड़","ढ़","फ़","य़"
-    ]);
-
-    const DEVANAGARI_COMBINERS = new Set([
+    ];
+    const BARAKHADI_MATRAS = [
       "ा","ि","ी","ु","ू","ृ","ॄ","ॅ","ॆ","े","ै","ॉ","ॊ","ो","ौ",
       "्","ं","ः","ँ","़"
-    ]);
+    ];
+    const BARAKHADI_CONS_SET = new Set(BARAKHADI_CONSONANTS);
+    const BARAKHADI_MATRA_SET = new Set(BARAKHADI_MATRAS);
+
+    // Build lossless bidirectional syllable table (base ID 2000..)
+    const BARAKHADI_TO_ID = new Map();
+    const ID_TO_BARAKHADI = new Map();
+    (function initBarakhadiTable() {
+      let nextId = 2000;
+      for (const c of BARAKHADI_CONSONANTS) {
+        for (const m of BARAKHADI_MATRAS) {
+          const syl = c + m;
+          BARAKHADI_TO_ID.set(syl, nextId);
+          ID_TO_BARAKHADI.set(nextId, syl);
+          nextId += 1;
+        }
+      }
+    })();
 
     function tokenizeDwleUnits(text) {
       const cps = [...text];
@@ -245,12 +261,17 @@ W8 (8-bit):  [00001011 = A]</pre>
       let i = 0;
       while (i < cps.length) {
         const ch = cps[i];
-        if (DEVANAGARI_CONSONANTS.has(ch) && i + 1 < cps.length && DEVANAGARI_COMBINERS.has(cps[i + 1])) {
+        if (BARAKHADI_CONS_SET.has(ch) && i + 1 < cps.length && BARAKHADI_MATRA_SET.has(cps[i + 1])) {
           let unit = ch;
           i += 1;
-          while (i < cps.length && DEVANAGARI_COMBINERS.has(cps[i])) {
-            unit += cps[i];
-            i += 1;
+          while (i < cps.length && BARAKHADI_MATRA_SET.has(cps[i])) {
+            const cand = unit + cps[i];
+            if (BARAKHADI_TO_ID.has(cand)) {
+              unit = cand;
+              i += 1;
+            } else {
+              break;
+            }
           }
           units.push(unit);
         } else {
@@ -261,58 +282,16 @@ W8 (8-bit):  [00001011 = A]</pre>
       return units;
     }
 
-    function encodeBarakhadiUnitId(unit) {
-      if (DEVANAGARI_CONSONANTS.has(unit[0]) && unit.length > 1) {
-        let h = 0;
-        for (const ch of unit) {
-          h = (h * 131 + ch.codePointAt(0)) % 900;
-        }
-        return 1000 + h; // 1000..1899 -> Barakhadi syllable IDs
-      }
-      return unit.codePointAt(0);
-    }
-
-    function decodeBarakhadiUnitId(id, w, level, slot) {
-      if (id >= 1000 && id < 1900) {
-        const idx = id - 1000;
-        const consList = [...DEVANAGARI_CONSONANTS];
-        const matraList = ["", "ा", "ि", "ी", "ु", "ू", "े", "ै", "ो", "ौ", "ं", "ः", "्"];
-        let c = 0;
-        for (let ci = 0; ci < consList.length; ci++) {
-          for (let mi = 0; mi < matraList.length; mi++) {
-            const cand = consList[ci] + matraList[mi];
-            let h = 0;
-            for (const ch of cand) h = (h * 131 + ch.codePointAt(0)) % 900;
-            if (1000 + h === id) return cand;
-            c++;
-          }
-        }
-      }
-      return String.fromCodePoint(id);
-    }
-    let __dwleLastBarakhadiDict = new Map();
-
     function getUnitCodePointOrId(unit) {
-      if (DEVANAGARI_CONSONANTS.has(unit[0]) && unit.length > 1) {
-        let h = 0;
-        for (const ch of unit) {
-          h = (h * 131 + ch.codePointAt(0)) % 900;
-        }
-        const id = 1000 + h;
-        __dwleLastBarakhadiDict.set(id, unit);
-        return id;
+      if (BARAKHADI_TO_ID.has(unit)) {
+        return BARAKHADI_TO_ID.get(unit);
       }
       return unit.codePointAt(0);
     }
 
     function getUnitWindow(unit) {
-      const id = getUnitCodePointOrId(unit);
-      if (id <= 0x7f) return 8;
-      if (id >= 1000 && id < 1900) return 9; // W9: Barakhadi syllable single token
-      if (id >= 0x0900 && id <= 0x097f) return 10;
-      if (id >= 0x1f300 && id <= 0x1faff) return 11;
-      if (id >= 0x4e00 && id <= 0x9fff) return 17;
-      return 21;
+      if (BARAKHADI_TO_ID.has(unit)) return 9; // W9: Single-token Barakhadi syllable
+      return getCharWindow(unit.codePointAt(0));
     }
 
     function getCharWindow(cp) {
@@ -504,18 +483,21 @@ W8 (8-bit):  [00001011 = A]</pre>
     function decodeWindowCharSlot(w, level, slot) {
       const cap = getWindowCharCapacity(w);
       const idx0 = (level - 1) * cap + (slot - 1);
+      if (ID_TO_BARAKHADI.has(idx0)) {
+        return ID_TO_BARAKHADI.get(idx0);
+      }
       if (w === 8) {
-        return (idx0 >= 1000 && idx0 < 1900 && __dwleLastBarakhadiDict.has(idx0)) ? __dwleLastBarakhadiDict.get(idx0) : String.fromCodePoint(idx0);
+        return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
       } else if (w === 9 || w === 10) {
         if (idx0 < 128) {
           return String.fromCodePoint(0x0900 + idx0);
         } else if (idx0 < 256) {
           return String.fromCodePoint(idx0 - 128);
         } else {
-          return String.fromCodePoint(idx0 - 256);
+          return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0 - 256)));
         }
       }
-      return String.fromCodePoint(idx0);
+      return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
     }
 
     function buildControlSequence(targetNum, w) {
