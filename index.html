@@ -551,7 +551,8 @@ W8 (8-bit):  [00001011 = A]</pre>
       // If 11 + targetNum fits in 12..(2^w - 1), emit single token; otherwise chain digits (1..10 -> 0..9) + null
       const maxVal = (1 << w) - 1;
       const directVal = 11 + targetNum;
-      if (directVal >= 12 && directVal <= maxVal) {
+      // Reserve 11=WinDef, 12=NestDef, 13=LvlDef in active/default flows; use directVal > 13 when available
+      if (directVal >= 14 && directVal <= maxVal) {
         return [{
           bits: directVal.toString(2).padStart(w, "0"),
           val: directVal,
