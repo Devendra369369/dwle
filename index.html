@@ -204,6 +204,8 @@
         <button type="button" id="btnSmartJump" onclick="optimizeWindowJump()" style="background:#7c3aed; color:#f8fafc;">Smart Jump</button>
         <button type="button" onclick="copySampleText()" style="background:#0f766e; color:#f8fafc;">Copy Text</button>
         <button type="button" onclick="clearSample()" style="background:#334155; color:#f8fafc;">Clear</button>
+        <button type="button" onclick="undoDwleState()" style="background:#475569; color:#f8fafc;">Undo</button>
+        <button type="button" onclick="redoDwleState()" style="background:#475569; color:#f8fafc;">Redo</button>
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
         <button type="button" onclick="downloadUnicodeFile()" style="background:#0f766e; color:#f8fafc;">Download Unicode (UTF-8) File</button>
@@ -748,6 +750,7 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     function fillHindi1KB() {
+      pushDwleHistory();
       const base = "भारत एक विशाल देश है जहाँ अनेक भाषाएँ और बोलियाँ बोली जाती हैं। विज्ञान, तकनीक और शिक्षा के क्षेत्र में निरंतर प्रगति हो रही है। ";
       let out = "";
       while (new TextEncoder().encode(out).length < 1024) {
@@ -771,7 +774,62 @@ W8 (8-bit):  [00001011 = A]</pre>
       if (resEl) resEl.innerHTML = `<strong>Copy Text:</strong> ${[...val].length} characters copy ho gaye.`;
     }
 
+    const __dwleUndoStack = [];
+    const __dwleRedoStack = [];
+
+    function pushDwleHistory() {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const snap = {
+        sample: sampleEl ? sampleEl.value : "",
+        binary: binEl ? binEl.value : ""
+      };
+      const last = __dwleUndoStack[__dwleUndoStack.length - 1];
+      if (!last || last.sample !== snap.sample || last.binary !== snap.binary) {
+        __dwleUndoStack.push(snap);
+        if (__dwleUndoStack.length > 30) __dwleUndoStack.shift();
+        __dwleRedoStack.length = 0;
+      }
+    }
+
+    function undoDwleState() {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const resEl = document.getElementById("resultBox");
+      if (!__dwleUndoStack.length) {
+        if (resEl) resEl.textContent = "Undo ke liye koi purani state nahi hai.";
+        return;
+      }
+      __dwleRedoStack.push({
+        sample: sampleEl ? sampleEl.value : "",
+        binary: binEl ? binEl.value : ""
+      });
+      const prev = __dwleUndoStack.pop();
+      if (sampleEl) sampleEl.value = prev.sample;
+      if (binEl) binEl.value = prev.binary;
+      if (resEl) resEl.textContent = "Undo ho gaya — purana text aur binary wapas aa gaya.";
+    }
+
+    function redoDwleState() {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const resEl = document.getElementById("resultBox");
+      if (!__dwleRedoStack.length) {
+        if (resEl) resEl.textContent = "Redo ke liye koi state nahi hai.";
+        return;
+      }
+      __dwleUndoStack.push({
+        sample: sampleEl ? sampleEl.value : "",
+        binary: binEl ? binEl.value : ""
+      });
+      const next = __dwleRedoStack.pop();
+      if (sampleEl) sampleEl.value = next.sample;
+      if (binEl) binEl.value = next.binary;
+      if (resEl) resEl.textContent = "Redo ho gaya.";
+    }
+
     function clearSample() {
+      pushDwleHistory();
       const sampleEl = document.getElementById("sampleText");
       const binEl = document.getElementById("binaryText");
       const resEl = document.getElementById("resultBox");
@@ -886,6 +944,7 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     function decodeBinaryToText() {
+      pushDwleHistory();
       const rawBits = getActiveComposerBits();
       if (!rawBits) {
         const resEl = document.getElementById("resultBox");
