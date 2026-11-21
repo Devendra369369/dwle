@@ -292,12 +292,13 @@ W8 (8-bit):  [00001011 = A]</pre>
       return SYL_TO_ORD_IDX.get(unit);
     }
 
-    function getCharWindow(cp) {
+            function getCharWindow(cp) {
+      if (cp >= 10000 && cp < 20000) return 10;
       if (cp <= 0x7f) return 8;
       if (cp >= 0x0900 && cp <= 0x097f) return 10;
-      if (cp >= 0x1f300 && cp <= 0x1faff) return 11;
-      if (cp >= 0x4e00 && cp <= 0x9fff) return 17;
-      return 21;
+      if (cp >= 0x3400 && cp <= 0x9fff) return 13;
+      if (cp > 0xffff) return 17;
+      return 13;
     }
 
     function getDominantWindow(chars) {
@@ -591,7 +592,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         const ch = chars[i];
         const isBara = typeof isBarakhadiUnit === "function" && isBarakhadiUnit(ch);
         const cp = isBara ? (10000 + getBarakhadiOrd(ch)) : ch.codePointAt(0);
-        const targetW = isBara ? (curW === 10 ? 10 : 9) : getCharWindow(cp);
+        const targetW = isBara ? 10 : getCharWindow(cp);
 
         if (targetW !== curW) {
           if (targetW === defW && curW !== defW) {
@@ -1263,7 +1264,7 @@ W8 (8-bit):  [00001011 = A]</pre>
 
           if (isBarakhadiUnit(u)) {
             codeVal = 10000 + getBarakhadiOrd(u);
-            unitW = chosenW === 8 ? 9 : chosenW;
+            unitW = chosenW === 8 ? 10 : 10;
           } else {
             codeVal = u.codePointAt(0);
             if (forcedMode === 10) {
@@ -1309,7 +1310,9 @@ W8 (8-bit):  [00001011 = A]</pre>
         { res: evalBlockWindowStream(units, 100, null), label: "Smart Agent (100-unit W8/W9/W10 + L^n)" },
         { res: evalBlockWindowStream(units, 1000, null), label: "Smart Agent (1000-unit W8/W9/W10 + L^n)" },
         { res: evalBlockWindowStream(units, 100, 10), label: "Block-100 W10 Focus" },
-        { res: evalBlockWindowStream(units, 100, 9), label: "Block-100 W9 Focus" }
+        { res: evalBlockWindowStream(units, 100, 9), label: "Block-100 W9 Focus" },
+        { res: evalBlockWindowStream(units, 100, 13), label: "Block-100 W13 (5k-8k+)" },
+        { res: evalBlockWindowStream(units, 100, 17), label: "Block-100 W17 (Full Unicode)" }
       ];
 
       let best = candidates[0];
