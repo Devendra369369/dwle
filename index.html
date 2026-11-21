@@ -362,6 +362,22 @@ W8 (8-bit):  [00001011 = A]</pre>
     // 14 .. (2^n - 1) = Character Data (slot = token - 13, 1-indexed)
     // Control targets (after null or 0): token = 11 + number (11=0, 12=1, 13=2, ..., 21=10)
 
+    function detectLanguageSummary(chars) {
+      if (!chars || !chars.length) return "Empty";
+      let dev = 0, ascii = 0, other = 0;
+      for (const ch of chars) {
+        const cp = ch.codePointAt(0);
+        if (cp >= 0x0900 && cp <= 0x097F) dev++;
+        else if (cp < 128) ascii++;
+        else other++;
+      }
+      const parts = [];
+      if (dev) parts.push(`Devanagari(${dev})`);
+      if (ascii) parts.push(`ASCII(${ascii})`);
+      if (other) parts.push(`Other(${other})`);
+      return parts.join(" + ") || "Mixed";
+    }
+
     function getWindowCharCapacity(w) {
       return Math.max(1, (1 << w) - 14);
     }
