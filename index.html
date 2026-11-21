@@ -1380,7 +1380,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           const enc = encodeWindowCharBits(cp, curW);
           if (enc.level !== curL) {
             bits.push((1).toString(2).padStart(curW, "0"));
-            readLines.push(`${${curW}}w1(0=LvlTrig)`);
+            readLines.push(`${curW}w1(0=LvlTrig)`);
             const lSeq = buildControlSequence(enc.level - 1, curW);
             pushCtrl(lSeq, `Lvl=${11 + (enc.level - 1)}->L${enc.level}`);
             curL = enc.level;
