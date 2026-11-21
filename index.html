@@ -795,6 +795,59 @@ W8 (8-bit):  [00001011 = A]</pre>
       setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
+    function handleDwleUpload(event) {
+      const input = event && event.target ? event.target : document.getElementById("dwleFileInput");
+      const file = input && input.files && input.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        const raw = e && e.target ? e.target.result : "";
+        let bitStr = "";
+
+        if (typeof raw === "string") {
+          bitStr = raw.replace(/[^01]/g, "");
+        } else if (raw instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(raw);
+          const asText = new TextDecoder().decode(bytes);
+          const onlyBits = asText.replace(/[^01]/g, "");
+          // If file looks like ASCII 0/1 text, use those bits; otherwise unpack raw bytes to bits
+          if (onlyBits.length >= 8 && onlyBits.length >= asText.trim().length * 0.8) {
+            bitStr = onlyBits;
+          } else {
+            let unpacked = "";
+            for (let i = 0; i < bytes.length; i++) {
+              unpacked += bytes[i].toString(2).padStart(8, "0");
+            }
+            bitStr = unpacked;
+          }
+        }
+
+        const binEl = document.getElementById("binaryText");
+        if (binEl) {
+          binEl.value = bitStr;
+        }
+        __dwleLastReadLines = [];
+
+        const decoded = decodeDwleBits(bitStr);
+        const sampleEl = document.getElementById("sampleText");
+        if (sampleEl) {
+          sampleEl.value = decoded;
+        }
+
+        const resEl = document.getElementById("resultBox");
+        if (resEl) {
+          resEl.innerHTML =
+            `<strong>Loaded File:</strong> ${file.name} (${bitStr.length} bits) | ` +
+            `<strong>Decoded:</strong> ${decoded.replace(/</g, "&lt;")}`;
+        }
+
+        if (input) input.value = "";
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+
     function downloadDwleFile() {
       const bits = getActiveComposerBits();
       const blob = new Blob([bits], { type: "text/plain;charset=utf-8" });
