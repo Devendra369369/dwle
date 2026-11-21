@@ -1441,7 +1441,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       const resEl = document.getElementById("resultBox");
       if (resEl) {
         resEl.innerHTML =
-          `<strong>Smart Jump (W${smartDwle.dominantW} + W13 Han):</strong> ${smartDwle.totalBits} bits | ` +
+          `<strong>Smart Jump (${smartDwle.smartMeta && smartDwle.smartMeta.chosenLabel ? smartDwle.smartMeta.chosenLabel : 'Optimized'}):</strong> ${smartDwle.totalBits} bits | ` +
           `<strong>Normal DWLE se bachat:</strong> ${savedVsNormal} bits | ` +
           `<strong>UTF-8 se bachat:</strong> ${savedVsUtf8} bits`;
       }
@@ -1458,87 +1458,50 @@ W8 (8-bit):  [00001011 = A]</pre>
     &copy; 2026 Devendra Kumar &mdash; DWLE
   </footer>
 
+
+
+
 <script>
-// === DWLE_SMART_SYNC_PATCH ===
+// === DWLE_LIGHT_SMART_HOOK ===
 (function() {
-  window.__dwleActiveMode = "normal";
-  window.__dwleActiveBits = null;
-  window.__dwleLastSmartInfo = null;
-
-  function formatSmartBreakdown(smartRes, normRes) {
-    if (!smartRes || !smartRes.smartMeta) return "";
-    const chosen = smartRes.smartMeta.chosenLabel || "Smart Jump";
-    const cands = Array.isArray(smartRes.smartMeta.candidates)
-      ? smartRes.smartMeta.candidates.map(c => `${c.label}:${c.bits}b`).join(" | ")
-      : "";
-    const saved = normRes ? (normRes.totalBits - smartRes.totalBits) : 0;
-    return `Method: ${chosen} | Bachat vs Normal: ${saved} bits` + (cands ? ` | All: ${cands}` : "");
-  }
-
-  const origSmart = window.computeSmartJumpStream;
-  if (typeof origSmart === "function") {
-    window.computeSmartJumpStream = function(text) {
-      const res = origSmart.apply(this, arguments);
-      if (res && Array.isArray(res.bits)) {
-        const normRes = (typeof window.computeDwleStream === "function") ? window.computeDwleStream(text) : null;
-        window.__dwleLastSmartInfo = formatSmartBreakdown(res, normRes);
-        window.__dwleActiveBits = res.bits.join("");
-      }
-      return res;
-    };
-  }
-
-  // Hook Smart Jump button click if present so UI bit-box & info show actual Smart Jump stream
-  document.addEventListener("DOMContentLoaded", function() {
-    const btns = [...document.querySelectorAll("button")];
-    const smartBtn = btns.find(b => /smart\s*jump/i.test(b.textContent || ""));
-    if (smartBtn) {
-      smartBtn.addEventListener("click", function() {
-        setTimeout(() => {
-          const ta = document.querySelector("textarea");
-          const textVal = ta ? ta.value : "";
-          if (typeof window.computeSmartJumpStream === "function" && textVal) {
-            const sRes = window.computeSmartJumpStream(textVal);
-            if (sRes && Array.isArray(sRes.bits)) {
-              window.__dwleActiveMode = "smart";
-              window.__dwleActiveBits = sRes.bits.join("");
-              const binBox = document.getElementById("binaryInput") || document.querySelector("textarea");
-              if (binBox && binBox !== ta) {
-                binBox.value = window.__dwleActiveBits;
-                binBox.dispatchEvent(new Event("input", { bubbles: true }));
-              }
-              // Show clear method & combo line near Smart Jump output
-              let badge = document.getElementById("dwleSmartMethodDetail");
-              if (!badge) {
-                badge = document.createElement("div");
-                badge.id = "dwleSmartMethodDetail";
-                badge.style.cssText = "margin-top:6px;padding:8px 10px;border-radius:8px;background:#111827;color:#93c5fd;font-size:12px;border:1px solid #1f2937;word-break:break-word;";
-                smartBtn.parentElement && smartBtn.parentElement.insertAdjacentElement("afterend", badge);
-              }
-              badge.textContent = window.__dwleLastSmartInfo || `Method: ${sRes.smartMeta?.chosenLabel || "Smart Jump"} (${sRes.totalBits} bits)`;
-            }
-          }
-        }, 30);
-      });
-    }
-
-    // Ensure Download DWLE File downloads currently active stream (Smart Jump bits when in smart mode)
-    const origCreateObjectURL = URL.createObjectURL.bind(URL);
-    URL.createObjectURL = function(obj) {
+  const origOpt = window.optimizeWindowJump;
+  if (typeof origOpt === "function") {
+    window.optimizeWindowJump = function() {
+      const ret = origOpt.apply(this, arguments);
       try {
-        if (obj instanceof Blob && window.__dwleActiveMode === "smart" && window.__dwleActiveBits) {
-          // If blob looks like normal stream or text, keep lossless Smart Jump bit stream when downloading .dwle
-          const stack = (new Error().stack || "");
-          if (/dwle|download|export/i.test(stack)) {
-            const header = `#DWLE_MODE=SMART_JUMP\n#METHOD=${window.__dwleLastSmartInfo || "SmartJump"}\n`;
-            const newBlob = new Blob([header + window.__dwleActiveBits], { type: obj.type || "text/plain;charset=utf-8" });
-            return origCreateObjectURL(newBlob);
+        const textEl = document.getElementById("textInput") || [...document.querySelectorAll("textarea")].find(t => t.id !== "binaryInput");
+        const binEl = document.getElementById("binaryInput");
+        const txt = textEl ? textEl.value : "";
+        if (txt && typeof window.computeSmartJumpStream === "function") {
+          const sRes = window.computeSmartJumpStream(txt);
+          const nRes = typeof window.computeDwleStream === "function" ? window.computeDwleStream(txt) : null;
+          if (sRes && Array.isArray(sRes.bits) && binEl) {
+            const smartBitsStr = sRes.bits.join("");
+            binEl.value = smartBitsStr;
+            binEl.dispatchEvent(new Event("input", { bubbles: true }));
+            window.__dwleActiveMode = "smart";
+            window.__dwleActiveBits = smartBitsStr;
+          }
+          const btn = document.getElementById("btnSmartJump");
+          if (btn && btn.parentElement && sRes && sRes.smartMeta) {
+            let infoBox = document.getElementById("dwleSmartComboInfo");
+            if (!infoBox) {
+              infoBox = document.createElement("div");
+              infoBox.id = "dwleSmartComboInfo";
+              infoBox.style.cssText = "margin-top:6px;padding:8px 10px;border-radius:8px;background:#111827;color:#a5f3fc;font-size:12px;border:1px solid #1e293b;word-break:break-word;";
+              btn.parentElement.insertAdjacentElement("afterend", infoBox);
+            }
+            const saved = nRes ? (nRes.totalBits - sRes.totalBits) : 0;
+            const cands = Array.isArray(sRes.smartMeta.candidates)
+              ? sRes.smartMeta.candidates.map(c => `${c.label}:${c.bits}b`).join(" | ")
+              : "";
+            infoBox.textContent = `Method: ${sRes.smartMeta.chosenLabel} | Smart: ${sRes.totalBits}b | Bachat: ${saved}b` + (cands ? ` | ${cands}` : "");
           }
         }
       } catch (_) {}
-      return origCreateObjectURL(obj);
+      return ret;
     };
-  });
+  }
 })();
 </script>
 
