@@ -355,427 +355,264 @@ W8 (8-bit):  [00001011 = A]</pre>
       return wHere;
     }
 
+    // Finalized DWLE Architecture:
+    // 0 = null (Window trigger)
+    // 1..10 = Control digits 0..9 (1 -> 0 = Level trigger, 2..10 -> 1..9 = Nested trigger)
+    // 11 = Window Default reset, 12 = Nested Default reset, 13 = Level Default reset
+    // 14 .. (2^n - 1) = Character Data (slot = token - 13, 1-indexed)
+    // Control targets (after null or 0): token = 11 + number (11=0, 12=1, 13=2, ..., 21=10)
+
+    function getWindowCharCapacity(w) {
+      return Math.max(1, (1 << w) - 14);
+    }
+
     function encodeWindowCharBits(cp, w) {
-      const info = detectScriptInfo(cp);
-      let offset = 0;
+      const cap = getWindowCharCapacity(w);
+      let idx0 = 0;
 
       if (w === 8) {
-        offset = cp & 0x7f;
-      } else if (w === 9) {
-        offset = cp <= 0x7f ? cp : Math.min(501, 128 + (cp - 0x0080));
-      } else if (w === 10) {
-        offset = cp <= 0x7f ? cp : Math.min(1013, 128 + (cp - 0x0900));
-      } else if (w === 11) {
-        offset = Math.max(0, Math.min(2037, cp - 0x1f300));
-      } else if (w === 13) {
-        const pIdx = CJK_PUNCT.indexOf(cp);
-        if (cp <= 0x7f) {
-          offset = cp;
-        } else if (pIdx !== -1) {
-          offset = 128 + pIdx;
+        idx0 = cp < cap ? cp : 63; // '?' fallback if out of range
+      } else if (w === 9 || w === 10) {
+        if (cp >= 0x0900 && cp <= 0x097F) {
+          idx0 = (cp - 0x0900);
+        } else if (cp < 128) {
+          idx0 = 128 + cp;
         } else {
-          offset = Math.max(256, Math.min(8181, 256 + (cp - 0x4e00)));
+          idx0 = cp % cap;
         }
-      } else if (w === 17) {
-        offset = Math.max(0, Math.min(131061, cp));
       } else {
-        offset = Math.max(0, Math.min(2097141, cp));
+        idx0 = cp % cap;
       }
 
-      const level = Math.floor(offset / 127) + 1;
-      const codeVal = 10 + offset;
+      const level = Math.floor(idx0 / cap) + 1;
+      const slot = (idx0 % cap) + 1; // 1-indexed slot (1 .. 2^n - 14)
+      const tokenVal = 13 + slot;    // 14 .. 2^n - 1
       return {
-        bits: codeVal.toString(2).padStart(w, "0"),
-        offset,
+        bits: tokenVal.toString(2).padStart(w, "0"),
         level,
-        codeVal,
-        lang: info.lang
+        slot,
+        offset: slot,
+        tokenVal
       };
     }
 
-    function decodeWindowOffset(offset, w) {
+    function decodeWindowCharSlot(w, level, slot) {
+      const cap = getWindowCharCapacity(w);
+      const idx0 = (level - 1) * cap + (slot - 1);
       if (w === 8) {
-        return offset & 0x7f;
-      } else if (w === 9) {
-        return offset < 128 ? offset : 0x0080 + (offset - 128);
-      } else if (w === 10) {
-        return offset < 128 ? offset : 0x0900 + (offset - 128);
-      } else if (w === 11) {
-        return 0x1f300 + offset;
-      } else if (w === 13) {
-        if (offset < 128) return offset;
-        if (offset >= 128 && offset < 128 + CJK_PUNCT.length) return CJK_PUNCT[offset - 128];
-        return 0x4e00 + (offset - 256);
-      } else if (w === 17 || w === 21) {
-        return offset;
+        return String.fromCodePoint(idx0);
+      } else if (w === 9 || w === 10) {
+        if (idx0 < 128) {
+          return String.fromCodePoint(0x0900 + idx0);
+        } else if (idx0 < 256) {
+          return String.fromCodePoint(idx0 - 128);
+        }
       }
-      return offset;
+      return String.fromCodePoint(Math.max(32, idx0));
     }
 
-    function describeWindowLanguage(w) {
-      if (w === 8) return "ASCII / English";
-      if (w === 9) return "French / European Latin";
-      if (w === 10) return "Hindi / Devanagari / Indic";
-      if (w === 11) return "Emoji / Symbols";
-      if (w === 13) return "Han / CJK";
-      if (w === 17) return "Urdu / Farsi / Arabic / Cyrillic / BMP";
-      return "Supplementary Unicode";
+    function buildControlSequence(targetNum, w) {
+      // targetNum is encoded using 11 + number (11=0, 12=1, ..., 21=10)
+      // If 11 + targetNum fits in 12..(2^w - 1), emit single token; otherwise chain digits (1..10 -> 0..9) + null
+      const maxVal = (1 << w) - 1;
+      const directVal = 11 + targetNum;
+      if (directVal >= 12 && directVal <= maxVal) {
+        return [{
+          bits: directVal.toString(2).padStart(w, "0"),
+          val: directVal,
+          desc: `${directVal}(11+${targetNum})`
+        }];
+      }
+      const digits = String(targetNum).split("").map(d => Number(d));
+      const seq = digits.map(d => {
+        const tok = d + 1; // 1..10 represents 0..9
+        return {
+          bits: tok.toString(2).padStart(w, "0"),
+          val: tok,
+          desc: `${tok}(digit:${d})`
+        };
+      });
+      seq.push({
+        bits: "0".repeat(w),
+        val: 0,
+        desc: `${w}null(end)`
+      });
+      return seq;
     }
 
     function computeDwleStream(text) {
       const chars = [...text];
-      if (chars.length === 0) {
-        return {
-          totalBits: 0,
-          bits: [],
-          dominantW: 8,
-          flowLines: ["Empty text"],
-          readLines: [],
-          tokenSegments: []
-        };
-      }
-
-      const dominantW = getDominantWindow(chars);
       let curW = 8;
+      let curL = 1;
+      let curN = 1;
+      let defW = 8;
+      let defL = 1;
+      let defN = 1;
+
       const bits = [];
-      const detectedLangs = new Set();
-      const flowLines = [];
       const readLines = [];
       const tokenSegments = [];
+      const flowLines = [];
+      const domW = getDominantWindow(chars);
 
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
         const cp = ch.codePointAt(0);
-        const info = detectScriptInfo(cp);
-        detectedLangs.add(info.lang);
-        const wHere = getEffectiveWindow(cp, curW, dominantW);
+        const targetW = getCharWindow(cp);
 
-        if (wHere !== curW) {
-          const nullBits = "0".repeat(curW);
-          const wCodeVal = 10 + wHere;
-          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
+        if (targetW !== curW) {
+          if (targetW === defW && curW !== defW) {
+            // Use token 11 = Window Default reset
+            const resetBits = (11).toString(2).padStart(curW, "0");
+            for (const c of resetBits) bits.push(Number(c));
+            readLines.push(`${resetBits}=${curW}w11(WinDefault->W${defW})`);
+            tokenSegments.push({ bits: resetBits, label: `11:WinDef->W${defW}` });
+            flowLines.push(`Reset 11 -> Default W${defW} at #${i + 1} [${ch}]`);
+            curW = defW;
+            curL = defL;
+            curN = defN;
+          } else {
+            // [null + (11 + targetW)]
+            const nullBits = "0".repeat(curW);
+            for (const c of nullBits) bits.push(Number(c));
+            readLines.push(`${nullBits}=${curW}null(WinTrig)`);
+            tokenSegments.push({ bits: nullBits, label: `null:WinTrig` });
 
-          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
-          readLines.push(`${nullBits}=${curW}nullw`);
-          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
-          tokenSegments.push({ bits: nullBits + wCodeBits, label: `switch->W${wHere}(${describeWindowLanguage(wHere)})` });
-          flowLines.push(`Switch W${curW} -> W${wHere} [${describeWindowLanguage(wHere)}]`);
-          curW = wHere;
+            const ctrlSeq = buildControlSequence(targetW, curW);
+            for (const item of ctrlSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wTarget=${item.desc}->W${targetW}`);
+              tokenSegments.push({ bits: item.bits, label: `W${targetW}` });
+            }
+            flowLines.push(`Switch W${curW} -> W${targetW} at #${i + 1} [${ch}]`);
+            curW = targetW;
+            curL = 1;
+          }
         }
 
         const enc = encodeWindowCharBits(cp, curW);
-        for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
-        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
-      }
 
-      flowLines.unshift(`Languages: ${[...detectedLangs].join(", ")} | Dominant: W${dominantW}`);
+        if (enc.level !== curL) {
+          if (enc.level === defL && curL !== defL) {
+            // Token 13 = Level Default reset
+            const lvlDefBits = (13).toString(2).padStart(curW, "0");
+            for (const c of lvlDefBits) bits.push(Number(c));
+            readLines.push(`${lvlDefBits}=${curW}w13(LvlDefault->L${defL})`);
+            tokenSegments.push({ bits: lvlDefBits, label: `13:LvlDef->L${defL}` });
+            curL = defL;
+          } else {
+            // [0 (token 1) + (11 + level)]
+            const lvlTrigBits = (1).toString(2).padStart(curW, "0");
+            for (const c of lvlTrigBits) bits.push(Number(c));
+            readLines.push(`${lvlTrigBits}=${curW}w1(0=LvlTrig)`);
+            tokenSegments.push({ bits: lvlTrigBits, label: `0:LvlTrig` });
+
+            const lvlSeq = buildControlSequence(enc.level, curW);
+            for (const item of lvlSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wLvl=${item.desc}->L${enc.level}`);
+              tokenSegments.push({ bits: item.bits, label: `L${enc.level}` });
+            }
+            curL = enc.level;
+          }
+        }
+
+        for (const c of enc.bits) bits.push(Number(c));
+        readLines.push(`${enc.bits}=${curW}wL${curL}=${ch}(slot:${enc.slot},tok:${enc.tokenVal})`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${curL}:${ch}` });
+      }
 
       return {
         totalBits: bits.length,
         bits,
-        dominantW,
-        flowLines: flowLines.slice(0, 12),
+        dominantW: domW,
+        flowLines: [
+          `Languages: ${detectLanguageSummary(chars)} | Dominant: W${domW}`,
+          ...(flowLines.length ? flowLines : ["Pure W8 L1 stream (0 switch overhead)"])
+        ].slice(0, 14),
         readLines,
         tokenSegments
       };
     }
 
-    function renderBinaryComposer(dwle) {
-      const binBox = document.getElementById("binaryText");
-      if (!binBox || document.activeElement === binBox) return;
-      if (binaryViewMode === "read") {
-        binBox.value = (dwle.readLines && dwle.readLines.length) ? dwle.readLines.join("\n") : "";
-      } else {
-        binBox.value = dwle.bits.join("");
-      }
-    }
-
-    function setBinaryMode(mode) {
-      binaryViewMode = mode;
-      const bDef = document.getElementById("btnModeDefault");
-      const bRead = document.getElementById("btnModeRead");
-      if (bDef) bDef.style.background = (mode === "default") ? "#0369a1" : "#334155";
-      if (bRead) bRead.style.background = (mode === "read") ? "#0369a1" : "#334155";
-      estimateBits();
-    }
-
-    function toggleNirdesh() {
-      const box = document.getElementById("nirdeshBox");
-      if (!box) return;
-      box.style.display = (box.style.display === "none") ? "block" : "none";
-    }
-
-    function formatTokenLines() {
-      const binBox = document.getElementById("binaryText");
-      if (!binBox) return;
-      const clean = (binBox.value || "").replace(/[^01]/g, "");
-      if (!clean) return;
-
+    function decodeDwleBits(bitString) {
+      const clean = bitString.replace(/[^01]/g, "");
+      let pos = 0;
       let curW = 8;
-      let idx = 0;
-      const lines = [];
-      while (idx < clean.length) {
-        const chunk = clean.slice(idx, idx + curW);
-        if (chunk.length < curW) {
-          lines.push(`${chunk}  [rem]`); break; } const num = parseInt(chunk, 2); if (num === 0) { lines.push(`${chunk}  [${curW}nullw]`); idx += curW; if (idx + curW <= clean.length) { const nextChunk = clean.slice(idx, idx + curW); const targetW = parseInt(nextChunk, 2) - 10; lines.push(`${nextChunk}  [${curW}w->W${targetW}]`);
-            idx += curW;
-            if ([5, 8, 9, 10, 11, 13, 17, 21].includes(targetW)) curW = targetW;
-          }
-          continue;
-        }
-        const offset = Math.max(0, num - 10);
-        const cp = decodeWindowOffset(offset, curW);
-        let ch = "?";
-        try { ch = String.fromCodePoint(cp); } catch (_) {}
-        lines.push(`${chunk}  [${curW}w:${ch}]`); idx += curW; } binBox.value = lines.join("\n"); }  function estimateBits() { const sampleEl = document.getElementById("sampleText"); const text = sampleEl ? (sampleEl.value || "") : ""; const utf8Bytes = new TextEncoder().encode(text).length; const utf8Bits = utf8Bytes * 8; const dwle = computeDwleStream(text); const dwleBits = dwle.totalBits; const dwleBytes = Math.ceil(dwleBits / 8);  const diff = utf8Bits - dwleBits; const pct = utf8Bits > 0 ? ((diff / utf8Bits) * 100).toFixed(2) : "0.00";  const resEl = document.getElementById("resultBox"); if (resEl) { resEl.innerHTML = `<strong>Characters:</strong> ${[...text].length} | ` +
-          `<strong>UTF-8:</strong> ${utf8Bytes} B (${utf8Bits} bits) | ` +
-          `<strong>DWLE:</strong> ${dwleBytes} B (${dwleBits} bits) | ` +
-          `<strong>Bachat:</strong> ${pct}% (${diff >= 0 ? diff + " bits kam" : Math.abs(diff) + " bits zyada"})`;
-      }
-
-      const flowEl = document.getElementById("visualFlowBox");
-      if (flowEl) flowEl.textContent = dwle.flowLines.join("\n");
-      renderBinaryComposer(dwle);
-    }
-
-    function compressAndCalculate() {
-      estimateBits();
-    }
-
-    function mapBitsToChars(bitStr) {
-      const clean = (bitStr || "").replace(/[^01]/g, "");
-      if (!clean) return "";
-
-      let curW = 8;
-      let idx = 0;
-      const out = [];
-      while (idx < clean.length) {
-        if (idx + curW > clean.length) break;
-        const chunk = clean.slice(idx, idx + curW);
-        idx += curW;
-        const num = parseInt(chunk, 2);
-        if (num === 0) {
-          if (idx + curW > clean.length) break;
-          const wCodeChunk = clean.slice(idx, idx + curW);
-          idx += curW;
-          const targetW = parseInt(wCodeChunk, 2) - 10;
-          if ([5, 8, 9, 10, 11, 13, 17, 21].includes(targetW)) {
-            curW = targetW;
-          }
-          continue;
-        }
-        const offset = Math.max(0, num - 10);
-        const cp = decodeWindowOffset(offset, curW);
-        try {
-          out.push(String.fromCodePoint(cp));
-        } catch (_) {
-          out.push("?");
-        }
-      }
-      return out.join("");
-    }
-
-    function decodeBinaryToText() {
-      const binBox = document.getElementById("binaryText");
-      const raw = binBox ? binBox.value : "";
-      const clean = raw.replace(/[^01]/g, "");
-      const decoded = mapBitsToChars(clean);
-      const sampleBox = document.getElementById("sampleText");
-      if (sampleBox) sampleBox.value = decoded;
-      const resEl = document.getElementById("resultBox");
-      if (resEl) {
-        resEl.innerHTML =
-          `<strong>Binary Decoded:</strong>
-${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
-          `<strong>UTF-8:</strong> ${new TextEncoder().encode(decoded).length * 8} bits`;
-      }
-      const flowEl = document.getElementById("visualFlowBox");
-      if (flowEl) flowEl.textContent = `Decoded ${clean.length} bits into ${[...decoded].length} chars.`;
-    }
-
-    function copyBinaryStream() {
-      const binBox = document.getElementById("binaryText");
-      if (!binBox) return;
-      const raw = binBox.value || "";
-      const textToCopy = (binaryViewMode === "default") ? raw.replace(/[^01]/g, "") : raw;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(textToCopy).catch(() => {});
-      }
-      binBox.focus();
-      binBox.select();
-    }
-
-    function copySampleText() {
-      const sampleBox = document.getElementById("sampleText");
-      if (!sampleBox) return;
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(sampleBox.value || "").catch(() => {});
-      }
-      sampleBox.focus();
-      sampleBox.select();
-    }
-
-    function clearSample() {
-      const sampleBox = document.getElementById("sampleText");
-      const binBox = document.getElementById("binaryText");
-      if (sampleBox) sampleBox.value = "";
-      if (binBox) binBox.value = "";
-      estimateBits();
-    }
-
-    function fillHindi1KB() {
-      const base = "भारत एक विशाल और विविध देश है जहाँ अलग-अलग भाषाएँ, बोलियाँ और संस्कृतियाँ साथ मिलकर रहती हैं। हिंदी हमारी प्रमुख भाषा है और इसका प्रयोग शिक्षा, साहित्य तथा दैनिक संवाद में व्यापक रूप से होता है। ";
+      let curL = 1;
+      let curN = 1;
+      let defW = 8;
+      let defL = 1;
+      let defN = 1;
       let out = "";
-      const enc = new TextEncoder();
-      while (enc.encode(out).length < 1024) {
-        out += base;
+
+      function readToken(w) {
+        if (pos + w > clean.length) return null;
+        const slice = clean.slice(pos, pos + w);
+        pos += w;
+        return parseInt(slice, 2);
       }
-      while (enc.encode(out).length > 1035 && out.length > 1) {
-        out = out.slice(0, -1);
-      }
-      document.getElementById("sampleText").value = out;
-      estimateBits();
-    }
 
-    function triggerDownload(blob, filename) {
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }
-
-    function downloadUnicodeFile() {
-      const text = document.getElementById("sampleText").value || "";
-      const bytes = new TextEncoder().encode(text);
-      const blob = new Blob([bytes], { type: "application/octet-stream" });
-      triggerDownload(blob, "dwle-unicode-utf8.bin");
-    }
-
-    function downloadDwleFile() {
-      const text = document.getElementById("sampleText").value || "";
-      const dwle = computeDwleStream(text);
-      const bitStr = dwle.bits.join("");
-      const bytes = new TextEncoder().encode(bitStr);
-      const blob = new Blob([bytes], { type: "text/plain;charset=utf-8" });
-      triggerDownload(blob, "dwle-compressed.dwle");
-    }
-
-    function handleDwleUpload(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-
-      const reader = new FileReader();
-      reader.onload = function () {
-        const rawText = String(reader.result || "");
-        const cleanBits = rawText.replace(/[^01]/g, "");
-        if (!cleanBits) {
-          document.getElementById("resultBox").innerHTML =
-            `<strong>Decoder Notice:</strong> "${file.name}" (${rawText.length} chars) mein valid 0/1 bit-stream nahi mila.`;
-          event.target.value = "";
-          return;
+      function readControlNumber(w) {
+        const first = readToken(w);
+        if (first === null) return null;
+        if (first >= 11) {
+          return first - 11; // 11=0, 12=1, 13=2, ..., 21=10
         }
-
-        const binBox = document.getElementById("binaryText");
-        if (binBox) binBox.value = cleanBits;
-
-        const decoded = mapBitsToChars(cleanBits);
-        document.getElementById("sampleText").value = decoded;
-
-        document.getElementById("resultBox").innerHTML =
-          `<strong>Decoded .DWLE File:</strong> ${file.name} (${cleanBits.length} bits) &rarr; ${[...decoded].length} chars | ` +
-          `<strong>UTF-8:</strong> ${new TextEncoder().encode(decoded).length * 8} bits`;
-        document.getElementById("visualFlowBox").textContent =
-          `Loaded ${cleanBits.length} bits from ${file.name} and decoded to ${[...decoded].length} chars.`;
-        event.target.value = "";
-      };
-      reader.readAsText(file, "utf-8");
-    }
-
-    function clearSample() {
-      const box = document.getElementById("sampleText");
-      box.value = "";
-      estimateBits();
-      box.focus();
-    }
-    estimateBits();
-  
-    function runJumpStrategy(chars, stayOnTargetWindow) {
-      let curW = 8;
-      const bits = [];
-      const readLines = [];
-      const tokenSegments = [];
-      const jumps = [];
-
-      for (let i = 0; i < chars.length; i++) {
-        const ch = chars[i];
-        const cp = ch.codePointAt(0);
-        const charW = getCharWindow(cp);
-
-        let aheadRun = 1;
-        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
-          aheadRun += 1;
-        }
-
-        let wHere = curW;
-
-        if (charW === 8) {
-          // If stayOnTargetWindow is true (e.g. after कक in W10), keep curW if it supports ASCII (W9/W10/W13/W17)
-          if (curW !== 8 && !stayOnTargetWindow) {
-            wHere = 8;
-          } else if (curW === 8) {
-            wHere = 8;
+        // Chained digits 1..10 (0..9) terminated by 0 (null)
+        let numStr = "";
+        let cur = first;
+        while (cur !== null && cur !== 0) {
+          if (cur >= 1 && cur <= 10) {
+            numStr += String(cur - 1);
           }
-        } else {
-          // Jump to target window for consecutive run >= 2 or if already in that window
-          if (aheadRun >= 2 || curW === charW) {
-            wHere = charW;
-          } else {
-            wHere = getEffectiveWindow(cp, curW, curW);
-            if (wHere === 8) {
-              // Single non-W8 char cannot fit in W8; allow single jump only if cheaper overall
-              wHere = charW;
-            }
-          }
+          cur = readToken(w);
         }
-
-        if (wHere !== curW) {
-          const nullBits = "0".repeat(curW);
-          const wCodeVal = 10 + wHere;
-          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
-
-          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
-          readLines.push(`${nullBits}=${curW}nullw`);
-          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
-          tokenSegments.push({ bits: nullBits + wCodeBits, label: `jump->W${wHere}` });
-          jumps.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
-          curW = wHere;
-        }
-
-        const enc = encodeWindowCharBits(cp, curW);
-        for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
-        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+        return numStr.length ? parseInt(numStr, 10) : 0;
       }
 
-      return {
-        totalBits: bits.length,
-        bits,
-        readLines,
-        tokenSegments,
-        jumps
-      };
-    }
+      while (pos + curW <= clean.length) {
+        const tok = readToken(curW);
+        if (tok === null) break;
 
-    // Window-5 (W5): 5-bit compact control & jump layer
-    // Rules: 0 = Null, 1..10 = Nested Level (1..10), 11+ = Data / Window target (10 + w)
-    function encodeW5Control(codeVal) {
-      const clamped = Math.max(0, Math.min(31, codeVal));
-      return clamped.toString(2).padStart(5, "0");
+        if (tok === 0) {
+          // null -> Window code
+          const nextW = readControlNumber(curW);
+          if (nextW !== null && nextW >= 5 && nextW <= 21) {
+            curW = nextW;
+            curL = 1;
+          }
+        } else if (tok === 1) {
+          // 1 - 1 = 0 -> Level code
+          const nextL = readControlNumber(curW);
+          if (nextL !== null && nextL >= 1) {
+            curL = nextL;
+          }
+        } else if (tok >= 2 && tok <= 10) {
+          // 2..10 -> 1..9 -> Nested code
+          const nextN = readControlNumber(curW);
+          if (nextN !== null && nextN >= 1) {
+            curN = nextN;
+          }
+        } else if (tok === 11) {
+          // 11 -> Window Default
+          curW = defW;
+          curL = defL;
+          curN = defN;
+        } else if (tok === 12) {
+          // 12 -> Nested Default
+          curN = defN;
+        } else if (tok === 13) {
+          // 13 -> Level Default
+          curL = defL;
+        } else if (tok >= 14) {
+          // 14 .. 2^n - 1 -> Character slot = tok - 13
+          const slot = tok - 13;
+          out += decodeWindowCharSlot(curW, curL, slot);
+        }
+      }
+
+      return out;
     }
 
     function evalW5JumpCandidate(chars) {
@@ -846,6 +683,9 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
 
     function evalSmartJumpCandidate(chars, mode) {
       let curW = 8;
+      let curL = 1;
+      const defW = 8;
+      const defL = 1;
       const bits = [];
       const readLines = [];
       const tokenSegments = [];
@@ -862,16 +702,11 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         }
 
         let wHere = curW;
-
         if (charW === 8) {
           if (curW !== 8) {
-            if (mode === "stay") {
-              wHere = curW;
-            } else if (mode === "return-on-run2") {
-              wHere = aheadRun >= 2 ? 8 : curW;
-            } else if (mode === "return-always") {
-              wHere = 8;
-            }
+            if (mode === "stay") wHere = curW;
+            else if (mode === "return-on-run2") wHere = aheadRun >= 2 ? 8 : curW;
+            else if (mode === "return-always") wHere = 8;
           } else {
             wHere = 8;
           }
@@ -885,22 +720,60 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         }
 
         if (wHere !== curW) {
-          const nullBits = "0".repeat(curW);
-          const wCodeVal = 10 + wHere;
-          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
+          if (wHere === defW && curW !== defW) {
+            // Single token 11 = Window Default reset!
+            const resetBits = (11).toString(2).padStart(curW, "0");
+            for (const c of resetBits) bits.push(Number(c));
+            readLines.push(`${resetBits}=${curW}w11(WinDefault->W${defW})`);
+            tokenSegments.push({ bits: resetBits, label: `11:WinDef` });
+            jumps.push(`Reset 11 -> W${defW} at #${i + 1} [${ch}]`);
+            curW = defW;
+            curL = defL;
+          } else {
+            const nullBits = "0".repeat(curW);
+            for (const c of nullBits) bits.push(Number(c));
+            readLines.push(`${nullBits}=${curW}null(WinTrig)`);
+            tokenSegments.push({ bits: nullBits, label: `null` });
 
-          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
-          readLines.push(`${nullBits}=${curW}nullw`);
-          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
-          tokenSegments.push({ bits: nullBits + wCodeBits, label: `jump->W${wHere}` });
-          jumps.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
-          curW = wHere;
+            const ctrlSeq = buildControlSequence(wHere, curW);
+            for (const item of ctrlSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wTarget=${item.desc}->W${wHere}`);
+              tokenSegments.push({ bits: item.bits, label: `W${wHere}` });
+            }
+            jumps.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
+            curW = wHere;
+            curL = 1;
+          }
         }
 
         const enc = encodeWindowCharBits(cp, curW);
+        if (enc.level !== curL) {
+          if (enc.level === defL && curL !== defL) {
+            const lvlDefBits = (13).toString(2).padStart(curW, "0");
+            for (const c of lvlDefBits) bits.push(Number(c));
+            readLines.push(`${lvlDefBits}=${curW}w13(LvlDefault->L${defL})`);
+            tokenSegments.push({ bits: lvlDefBits, label: `13:LvlDef` });
+            curL = defL;
+          } else {
+            const lvlTrigBits = (1).toString(2).padStart(curW, "0");
+            for (const c of lvlTrigBits) bits.push(Number(c));
+            readLines.push(`${lvlTrigBits}=${curW}w1(0=LvlTrig)`);
+            tokenSegments.push({ bits: lvlTrigBits, label: `0:Lvl` });
+
+            const lvlSeq = buildControlSequence(enc.level, curW);
+            for (const item of lvlSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wLvl=${item.desc}->L${enc.level}`);
+              tokenSegments.push({ bits: item.bits, label: `L${enc.level}` });
+            }
+            curL = enc.level;
+          }
+        }
+
         for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
-        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+        readLines.push(`${enc.bits}=${curW}wL${curL}=${ch}(slot:${enc.slot})`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${curL}:${ch}` });
       }
 
       return {
