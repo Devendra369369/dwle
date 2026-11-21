@@ -450,6 +450,51 @@ W8 (8-bit):  [00001011 = A]</pre>
       return Math.max(1, (1 << w) - 14);
     }
 
+    const W10_BARAKHADI_SYL_TO_CODE = new Map();
+    const W10_BARAKHADI_CODE_TO_SYL = new Map();
+
+    (function initW10Barakhadi() {
+      const baseList = typeof BARAKHADI_CONSONANTS !== "undefined" ? BARAKHADI_CONSONANTS : [
+        "क","ख","ग","घ","ङ","च","छ","ज","झ","ञ","ट","ठ","ड","ढ","ण",
+        "त","थ","द","ध","न","प","फ","ब","भ","म","य","र","ल","व",
+        "श","ष","स","ह"
+      ];
+      const matraList = typeof BARAKHADI_MATRAS !== "undefined" ? BARAKHADI_MATRAS : [
+        "ा","ि","ी","ु","ू","ृ","ॄ","ॅ","ॆ","े","ै","ॉ","ॊ","ो","ौ",
+        "्","ं","ः","ँ","़"
+      ];
+      let code = 3000;
+      for (const c of baseList) {
+        for (const m of matraList) {
+          const syl = c + m;
+          if (!W10_BARAKHADI_SYL_TO_CODE.has(syl)) {
+            W10_BARAKHADI_SYL_TO_CODE.set(syl, code);
+            W10_BARAKHADI_CODE_TO_SYL.set(code, syl);
+            code += 1;
+          }
+        }
+      }
+    })();
+
+    function isW10BarakhadiUnit(unit) {
+      return typeof unit === "string" && W10_BARAKHADI_SYL_TO_CODE.has(unit);
+    }
+
+    function getW10UnitCode(unit) {
+      if (isW10BarakhadiUnit(unit)) {
+        return W10_BARAKHADI_SYL_TO_CODE.get(unit);
+      }
+      return unit.codePointAt(0);
+    }
+
+    function getHybridW10Window(unit) {
+      if (isW10BarakhadiUnit(unit)) return 10;
+      const cp = unit.codePointAt(0);
+      if (cp <= 0x7f) return 10; // ASCII also supported directly in W10
+      if (cp >= 0x0900 && cp <= 0x097f) return 10;
+      return getCharWindow(cp);
+    }
+
     function encodeWindowCharBits(cp, w) {
       const cap = getWindowCharCapacity(w);
       let idx0 = 0;
@@ -483,6 +528,9 @@ W8 (8-bit):  [00001011 = A]</pre>
     function decodeWindowCharSlot(w, level, slot) {
       const cap = getWindowCharCapacity(w);
       const idx0 = (level - 1) * cap + (slot - 1);
+      if (W10_BARAKHADI_CODE_TO_SYL.has(idx0)) {
+        return W10_BARAKHADI_CODE_TO_SYL.get(idx0);
+      }
       if (ID_TO_BARAKHADI.has(idx0)) {
         return ID_TO_BARAKHADI.get(idx0);
       }
@@ -546,8 +594,8 @@ W8 (8-bit):  [00001011 = A]</pre>
 
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
-        const cp = ch.length > 1 ? getUnitCodePointOrId(ch) : ch.codePointAt(0);
-        const targetW = ch.length > 1 ? getUnitWindow(ch) : getCharWindow(cp);
+        const cp = isW10BarakhadiUnit(ch) ? getW10UnitCode(ch) : (ch.length > 1 ? getUnitCodePointOrId(ch) : ch.codePointAt(0));
+        const targetW = isW10BarakhadiUnit(ch) ? (curW === 9 ? 9 : 10) : (ch.length > 1 ? getUnitWindow(ch) : getCharWindow(cp));
 
         if (targetW !== curW) {
           if (targetW === defW && curW !== defW) {
@@ -1126,7 +1174,7 @@ W8 (8-bit):  [00001011 = A]</pre>
 
         let wHere = curW;
         if (mode === "hybrid-w10") {
-          wHere = charW <= 10 ? 10 : charW;
+          wHere = isW10BarakhadiUnit(ch) || charW <= 10 ? 10 : charW;
         } else if (charW === 8) {
           if (curW !== 8) {
             if (mode === "stay") wHere = curW;
