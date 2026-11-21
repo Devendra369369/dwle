@@ -1505,6 +1505,47 @@ W8 (8-bit):  [00001011 = A]</pre>
 })();
 </script>
 
+
+<script>
+// === DWLE_SMART_COMPOSER_FIX ===
+(function() {
+  function syncSmartToComposer() {
+    try {
+      const binEl = document.getElementById("binaryInput");
+      const textEl = document.getElementById("textInput") ||
+        [...document.querySelectorAll("textarea")].find(t => t.id !== "binaryInput");
+      const txt = textEl ? textEl.value : "";
+      if (!txt || !binEl || typeof computeSmartJumpStream !== "function") return;
+
+      const sRes = computeSmartJumpStream(txt);
+      if (!sRes || !Array.isArray(sRes.bits)) return;
+
+      const smartBits = sRes.bits.join("");
+      binEl.value = smartBits;
+      binEl.dispatchEvent(new Event("input", { bubbles: true }));
+      binEl.dispatchEvent(new Event("change", { bubbles: true }));
+
+      // Also update any visible read-only / token / bit display elements if present
+      for (const fnName of ["renderBinaryComposer", "updateBinaryComposer", "refreshBinaryView", "onBinaryInput"]) {
+        if (typeof window[fnName] === "function") {
+          try { window[fnName](smartBits); } catch (_) {}
+        }
+      }
+    } catch (_) {}
+  }
+
+  document.addEventListener("DOMContentLoaded", function() {
+    const btn = document.getElementById("btnSmartJump");
+    if (btn) {
+      btn.addEventListener("click", function() {
+        setTimeout(syncSmartToComposer, 20);
+        setTimeout(syncSmartToComposer, 120);
+      });
+    }
+  });
+})();
+</script>
+
 </body>
 </html>
 
