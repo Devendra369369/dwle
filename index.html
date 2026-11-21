@@ -501,23 +501,17 @@ W8 (8-bit):  [00001011 = A]</pre>
 
       if (cp >= 2000 && cp < 5000) {
         idx0 = cp;
-      } else if (w === 8) {
-        idx0 = cp < cap ? cp : 63;
-      } else if (w === 9 || w === 10) {
-        if (cp >= 0x0900 && cp <= 0x097F) {
-          idx0 = cp - 0x0900;
-        } else if (cp < 128) {
-          idx0 = 128 + cp;
-        } else {
-          idx0 = 256 + cp;
-        }
-      } else {
+      } else if (cp >= 0x0900 && cp <= 0x097F) {
+        idx0 = 128 + (cp - 0x0900);
+      } else if (cp < 128) {
         idx0 = cp;
+      } else {
+        idx0 = 5000 + cp;
       }
 
       const level = Math.floor(idx0 / cap) + 1;
-      const slot = (idx0 % cap) + 1; // 1-indexed slot (1 .. 2^n - 14)
-      const tokenVal = 13 + slot;    // 14 .. 2^n - 1
+      const slot = (idx0 % cap) + 1;
+      const tokenVal = 13 + slot;
       return {
         bits: tokenVal.toString(2).padStart(w, "0"),
         level,
@@ -530,22 +524,24 @@ W8 (8-bit):  [00001011 = A]</pre>
     function decodeWindowCharSlot(w, level, slot) {
       const cap = getWindowCharCapacity(w);
       const idx0 = (level - 1) * cap + (slot - 1);
-      if (W10_BARAKHADI_CODE_TO_SYL.has(idx0)) {
-        return W10_BARAKHADI_CODE_TO_SYL.get(idx0);
-      }
-      if (ID_TO_BARAKHADI.has(idx0)) {
-        return ID_TO_BARAKHADI.get(idx0);
-      }
-      if (w === 8) {
-        return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
-      } else if (w === 9 || w === 10) {
-        if (idx0 < 128) {
-          return String.fromCodePoint(0x0900 + idx0);
-        } else if (idx0 < 256) {
-          return String.fromCodePoint(idx0 - 128);
-        } else {
-          return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0 - 256)));
+
+      if (idx0 >= 2000 && idx0 < 5000) {
+        if (typeof W10_BARAKHADI_CODE_TO_SYL !== "undefined" && W10_BARAKHADI_CODE_TO_SYL.has(idx0)) {
+          return W10_BARAKHADI_CODE_TO_SYL.get(idx0);
         }
+        if (typeof ID_TO_BARAKHADI !== "undefined" && ID_TO_BARAKHADI.has(idx0)) {
+          return ID_TO_BARAKHADI.get(idx0);
+        }
+      }
+      if (idx0 >= 128 && idx0 < 256) {
+        return String.fromCodePoint(0x0900 + (idx0 - 128));
+      }
+      if (idx0 >= 0 && idx0 < 128) {
+        return String.fromCodePoint(idx0);
+      }
+      if (idx0 >= 5000) {
+        const origCp = idx0 - 5000;
+        return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, origCp)));
       }
       return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
     }
