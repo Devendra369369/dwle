@@ -636,8 +636,11 @@ W8 (8-bit):  [00001011 = A]</pre>
       return clamped.toString(2).padStart(5, "0");
     }
 
+    let __dwleBinaryMode = "default";
+    let __dwleLastReadLines = [];
+
     function getActiveComposerBits() {
-      const binEl = document.getElementById("binaryInput") || document.getElementById("bitInput");
+      const binEl = document.getElementById("binaryText");
       if (binEl && binEl.value && binEl.value.replace(/[^01]/g, "").length > 0) {
         return binEl.value.replace(/[^01]/g, "");
       }
@@ -648,12 +651,152 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     function setComposerBits(bitStr, labelInfo) {
-      const binEl = document.getElementById("binaryInput") || document.getElementById("bitInput");
-      if (binEl) binEl.value = bitStr;
-      const readBox = document.getElementById("readBox") || document.getElementById("tokenLinesBox");
-      if (readBox && labelInfo) {
-        readBox.textContent = Array.isArray(labelInfo) ? labelInfo.join("\n") : String(labelInfo);
+      const binEl = document.getElementById("binaryText");
+      if (Array.isArray(labelInfo)) {
+        __dwleLastReadLines = labelInfo.slice();
       }
+      if (!binEl) return;
+      if (__dwleBinaryMode === "read" && __dwleLastReadLines.length > 0) {
+        binEl.value = __dwleLastReadLines.join("\n");
+      } else {
+        binEl.value = bitStr || "";
+      }
+    }
+
+    function setBinaryMode(mode) {
+      __dwleBinaryMode = mode === "read" ? "read" : "default";
+      const binEl = document.getElementById("binaryText");
+      const btnDef = document.getElementById("btnModeDefault");
+      const btnRead = document.getElementById("btnModeRead");
+      if (btnDef) btnDef.style.background = __dwleBinaryMode === "default" ? "#0369a1" : "#334155";
+      if (btnRead) btnRead.style.background = __dwleBinaryMode === "read" ? "#0369a1" : "#334155";
+
+      if (!binEl) return;
+      if (__dwleBinaryMode === "read") {
+        if (__dwleLastReadLines.length > 0) {
+          binEl.value = __dwleLastReadLines.join("\n");
+        } else {
+          const sampleEl = document.getElementById("sampleText");
+          const txt = sampleEl ? (sampleEl.value || "") : "";
+          if (txt) {
+            const st = computeDwleStream(txt);
+            __dwleLastReadLines = st.readLines;
+            binEl.value = st.readLines.join("\n");
+          }
+        }
+      } else {
+        const sampleEl = document.getElementById("sampleText");
+        const txt = sampleEl ? (sampleEl.value || "") : "";
+        if (txt) {
+          binEl.value = computeDwleStream(txt).bits.join("");
+        } else {
+          binEl.value = binEl.value.replace(/[^01]/g, "");
+        }
+      }
+    }
+
+    function formatTokenLines() {
+      const sampleEl = document.getElementById("sampleText");
+      const txt = sampleEl ? (sampleEl.value || "") : "";
+      const binEl = document.getElementById("binaryText");
+      if (txt) {
+        const st = computeDwleStream(txt);
+        __dwleLastReadLines = st.readLines;
+        if (binEl) binEl.value = st.readLines.join("\n");
+      } else if (binEl && binEl.value.trim()) {
+        const clean = binEl.value.replace(/[^01]/g, "");
+        const lines = [];
+        for (let i = 0; i < clean.length; i += 8) {
+          lines.push(clean.slice(i, i + 8));
+        }
+        binEl.value = lines.join("\n");
+      }
+    }
+
+    function copyBinaryStream() {
+      const binEl = document.getElementById("binaryText");
+      const val = binEl ? binEl.value : "";
+      if (!val) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(val).catch(() => {});
+      }
+      const resEl = document.getElementById("resultBox");
+      if (resEl) resEl.innerHTML = `<strong>Copy 01:</strong> ${val.replace(/[^01]/g, "").length} bits copy ho gaye.`;
+    }
+
+    function toggleNirdesh() {
+      const box = document.getElementById("nirdeshBox");
+      if (!box) return;
+      const isHidden = box.style.display === "none" || !box.style.display;
+      box.style.display = isHidden ? "block" : "none";
+      if (isHidden && !box.textContent.trim()) {
+        box.innerHTML =
+          "<strong>DWLE Token Nirdesh:</strong> " +
+          "<code>00000000</code> (null) = Window trigger | " +
+          "<code>00000001</code> (1-1=0) = Level trigger | " +
+          "<code>2..10</code> (1..9) = Nested trigger | " +
+          "<code>11</code> = Window Default | <code>12</code> = Nested Default | <code>13</code> = Level Default | " +
+          "<code>14+</code> = Character slot (<code>token - 13</code>, 1-indexed).";
+      }
+    }
+
+    function fillHindi1KB() {
+      const base = "भारत एक विशाल देश है जहाँ अनेक भाषाएँ और बोलियाँ बोली जाती हैं। विज्ञान, तकनीक और शिक्षा के क्षेत्र में निरंतर प्रगति हो रही है। ";
+      let out = "";
+      while (new TextEncoder().encode(out).length < 1024) {
+        out += base;
+      }
+      const sampleEl = document.getElementById("sampleText");
+      if (sampleEl) {
+        sampleEl.value = out;
+        estimateBits();
+      }
+    }
+
+    function copySampleText() {
+      const sampleEl = document.getElementById("sampleText");
+      const val = sampleEl ? sampleEl.value : "";
+      if (!val) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(val).catch(() => {});
+      }
+      const resEl = document.getElementById("resultBox");
+      if (resEl) resEl.innerHTML = `<strong>Copy Text:</strong> ${[...val].length} characters copy ho gaye.`;
+    }
+
+    function clearSample() {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const resEl = document.getElementById("resultBox");
+      const flowEl = document.getElementById("visualFlowBox");
+      if (sampleEl) sampleEl.value = "";
+      if (binEl) binEl.value = "";
+      __dwleLastReadLines = [];
+      if (resEl) resEl.textContent = 'Upar "Compress & Calculate" par click karo.';
+      if (flowEl) flowEl.textContent = "";
+    }
+
+    function downloadUnicodeFile() {
+      const sampleEl = document.getElementById("sampleText");
+      const txt = sampleEl ? (sampleEl.value || "") : "";
+      const blob = new Blob([txt], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "dwle_unicode.txt";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function downloadDwleFile() {
+      const bits = getActiveComposerBits();
+      const blob = new Blob([bits], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "dwle_stream.dwle";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
     }
 
     function estimateBits() {
