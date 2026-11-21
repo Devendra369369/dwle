@@ -228,29 +228,31 @@ W8 (8-bit):  [00001011 = A]</pre>
   </div>
 
   <script>
-    const BARAKHADI_CONSONANTS = [
+    const ORDERED_CONSONANTS = [
       "क","ख","ग","घ","ङ","च","छ","ज","झ","ञ","ट","ठ","ड","ढ","ण",
       "त","थ","द","ध","न","प","फ","ब","भ","म","य","र","ल","व",
-      "श","ष","स","ह","क़","ख़","ग़","ज़","ड़","ढ़","फ़","य़"
+      "श","ष","स","ह","क़","ख़","ग़","ज़","ड़","ढ़","फ़","य़","ज्ञ","क्ष","त्र","श्र"
     ];
-    const BARAKHADI_MATRAS = [
+    const ORDERED_MATRAS = [
       "ा","ि","ी","ु","ू","ृ","ॄ","ॅ","ॆ","े","ै","ॉ","ॊ","ो","ौ",
       "्","ं","ः","ँ","़"
     ];
-    const BARAKHADI_CONS_SET = new Set(BARAKHADI_CONSONANTS);
-    const BARAKHADI_MATRA_SET = new Set(BARAKHADI_MATRAS);
+    const ORDERED_CONS_SET = new Set(ORDERED_CONSONANTS);
+    const ORDERED_MATRA_SET = new Set(ORDERED_MATRAS);
 
-    // Build lossless bidirectional syllable table (base ID 2000..)
-    const BARAKHADI_TO_ID = new Map();
-    const ID_TO_BARAKHADI = new Map();
-    (function initBarakhadiTable() {
-      let nextId = 2000;
-      for (const c of BARAKHADI_CONSONANTS) {
-        for (const m of BARAKHADI_MATRAS) {
+    // Deterministic index (1..N) where slot = ((idx - 1) % cap) + 1 -> tokenVal = 13 + slot (>= 14)
+    const SYL_TO_ORD_IDX = new Map();
+    const ORD_IDX_TO_SYL = new Map();
+    (function buildOrderedBarakhadi() {
+      let ord = 1;
+      for (const c of ORDERED_CONSONANTS) {
+        for (const m of ORDERED_MATRAS) {
           const syl = c + m;
-          BARAKHADI_TO_ID.set(syl, nextId);
-          ID_TO_BARAKHADI.set(nextId, syl);
-          nextId += 1;
+          if (!SYL_TO_ORD_IDX.has(syl)) {
+            SYL_TO_ORD_IDX.set(syl, ord);
+            ORD_IDX_TO_SYL.set(ord, syl);
+            ord += 1;
+          }
         }
       }
     })();
@@ -261,13 +263,13 @@ W8 (8-bit):  [00001011 = A]</pre>
       let i = 0;
       while (i < cps.length) {
         const ch = cps[i];
-        if (BARAKHADI_CONS_SET.has(ch) && i + 1 < cps.length && BARAKHADI_MATRA_SET.has(cps[i + 1])) {
+        if (ORDERED_CONS_SET.has(ch) && i + 1 < cps.length && ORDERED_MATRA_SET.has(cps[i + 1])) {
           let unit = ch;
           i += 1;
-          while (i < cps.length && BARAKHADI_MATRA_SET.has(cps[i])) {
-            const cand = unit + cps[i];
-            if (BARAKHADI_TO_ID.has(cand)) {
-              unit = cand;
+          while (i < cps.length && ORDERED_MATRA_SET.has(cps[i])) {
+            const nextUnit = unit + cps[i];
+            if (SYL_TO_ORD_IDX.has(nextUnit)) {
+              unit = nextUnit;
               i += 1;
             } else {
               break;
@@ -282,16 +284,12 @@ W8 (8-bit):  [00001011 = A]</pre>
       return units;
     }
 
-    function getUnitCodePointOrId(unit) {
-      if (BARAKHADI_TO_ID.has(unit)) {
-        return BARAKHADI_TO_ID.get(unit);
-      }
-      return unit.codePointAt(0);
+    function isBarakhadiUnit(unit) {
+      return typeof unit === "string" && SYL_TO_ORD_IDX.has(unit);
     }
 
-    function getUnitWindow(unit) {
-      if (BARAKHADI_TO_ID.has(unit)) return 9; // W9: Single-token Barakhadi syllable
-      return getCharWindow(unit.codePointAt(0));
+    function getBarakhadiOrd(unit) {
+      return SYL_TO_ORD_IDX.get(unit);
     }
 
     function getCharWindow(cp) {
@@ -495,26 +493,22 @@ W8 (8-bit):  [00001011 = A]</pre>
       return getCharWindow(cp);
     }
 
-    const IDX0_TO_ENCODED_VAL = new Map();
-
     function encodeWindowCharBits(cp, w) {
       const cap = getWindowCharCapacity(w);
       let idx0 = 0;
 
-      if (cp >= 2000 && cp < 5000) {
-        idx0 = cp;
+      if (cp >= 10000 && cp < 20000) {
+        idx0 = cp; // already 10000 + ord
       } else if (cp >= 0x0900 && cp <= 0x097F) {
         idx0 = 128 + (cp - 0x0900);
       } else if (cp < 128) {
         idx0 = cp;
       } else {
-        idx0 = 5000 + cp;
+        idx0 = 20000 + cp;
       }
 
-      IDX0_TO_ENCODED_VAL.set(idx0, cp);
-
       const level = Math.floor(idx0 / cap) + 1;
-      const slot = (idx0 % cap) + 1;
+      const slot = (idx0 % cap) + 1; // slot 1 -> token 14, slot 2 -> token 15 ...
       const tokenVal = 13 + slot;
       return {
         bits: tokenVal.toString(2).padStart(w, "0"),
@@ -529,21 +523,23 @@ W8 (8-bit):  [00001011 = A]</pre>
       const cap = getWindowCharCapacity(w);
       const idx0 = (level - 1) * cap + (slot - 1);
 
-      const val = IDX0_TO_ENCODED_VAL.has(idx0)
-        ? IDX0_TO_ENCODED_VAL.get(idx0)
-        : (idx0 >= 2000 && idx0 < 5000
-            ? idx0
-            : (idx0 >= 128 && idx0 < 256
-                ? 0x0900 + (idx0 - 128)
-                : (idx0 >= 5000 ? idx0 - 5000 : idx0)));
-
-      if (typeof W10_BARAKHADI_CODE_TO_SYL !== "undefined" && W10_BARAKHADI_CODE_TO_SYL.has(val)) {
-        return W10_BARAKHADI_CODE_TO_SYL.get(val);
+      if (idx0 >= 10000 && idx0 < 20000) {
+        const ord = idx0 - 10000;
+        if (ORD_IDX_TO_SYL.has(ord)) {
+          return ORD_IDX_TO_SYL.get(ord);
+        }
       }
-      if (typeof ID_TO_BARAKHADI !== "undefined" && ID_TO_BARAKHADI.has(val)) {
-        return ID_TO_BARAKHADI.get(val);
+      if (idx0 >= 128 && idx0 < 256) {
+        return String.fromCodePoint(0x0900 + (idx0 - 128));
       }
-      return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, val)));
+      if (idx0 >= 0 && idx0 < 128) {
+        return String.fromCodePoint(idx0);
+      }
+      if (idx0 >= 20000) {
+        const origCp = idx0 - 20000;
+        return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, origCp)));
+      }
+      return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
     }
 
     function buildControlSequence(targetNum, w) {
@@ -1151,145 +1147,168 @@ W8 (8-bit):  [00001011 = A]</pre>
       };
     }
 
-    function evalSmartJumpCandidate(chars, mode) {
+    function evalBlockWindowStream(units, blockSize, forcedMode) {
       let curW = 8;
       let curL = 1;
+      let curN = 1;
       const defW = 8;
       const defL = 1;
+      const defN = 1;
       const bits = [];
       const readLines = [];
       const tokenSegments = [];
       const jumps = [];
 
-      for (let i = 0; i < chars.length; i++) {
-        const ch = chars[i];
-        const cp = ch.codePointAt(0);
-        const charW = getCharWindow(cp);
-
-        let aheadRun = 1;
-        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
-          aheadRun += 1;
-        }
-
-        let wHere = curW;
-        if (mode === "hybrid-w10") {
-          wHere = isW10BarakhadiUnit(ch) || charW <= 10 ? 10 : charW;
-        } else if (charW === 8) {
-          if (curW !== 8) {
-            if (mode === "stay") wHere = curW;
-            else if (mode === "return-on-run2") wHere = aheadRun >= 2 ? 8 : curW;
-            else if (mode === "return-always") wHere = 8;
-          } else {
-            wHere = 8;
-          }
-        } else {
-          if ((curW === 9 || curW === 10) && charW <= curW) {
-            wHere = curW;
-          } else if (aheadRun >= 2 || curW === charW) {
-            wHere = charW;
-          } else {
-            wHere = getEffectiveWindow(cp, curW, curW);
-            if (wHere === 8) wHere = charW;
-          }
-        }
-
-        if (wHere !== curW) {
-          if (wHere === defW && curW !== defW) {
-            const resetBits = (11).toString(2).padStart(curW, "0");
-            for (const c of resetBits) bits.push(Number(c));
-            readLines.push(`${resetBits}=${curW}w11(WinDefault->W${defW})`);
-            tokenSegments.push({ bits: resetBits, label: `11:WinDef` });
-            jumps.push(`Reset 11 -> W${defW} at #${i + 1} [${ch}]`);
-            curW = defW;
-            curL = defL;
-          } else {
-            const nullBits = "0".repeat(curW);
-            for (const c of nullBits) bits.push(Number(c));
-            readLines.push(`${nullBits}=${curW}null(WinTrig)`);
-            tokenSegments.push({ bits: nullBits, label: `null` });
-
-            const ctrlSeq = buildControlSequence(wHere, curW);
-            for (const item of ctrlSeq) {
-              for (const c of item.bits) bits.push(Number(c));
-              readLines.push(`${item.bits}=${curW}wTarget=${item.desc}->W${wHere}`);
-              tokenSegments.push({ bits: item.bits, label: `W${wHere}` });
-            }
-            jumps.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
-            curW = wHere;
-            curL = 1;
-          }
-        }
-
-        const enc = encodeWindowCharBits(cp, curW);
-        if (enc.level !== curL) {
-          if (enc.level === defL && curL !== defL) {
-            const lvlDefBits = (13).toString(2).padStart(curW, "0");
-            for (const c of lvlDefBits) bits.push(Number(c));
-            readLines.push(`${lvlDefBits}=${curW}w13(LvlDefault->L${defL})`);
-            tokenSegments.push({ bits: lvlDefBits, label: `13:LvlDef` });
-            curL = defL;
-          } else {
-            const lvlTrigBits = (1).toString(2).padStart(curW, "0");
-            for (const c of lvlTrigBits) bits.push(Number(c));
-            readLines.push(`${lvlTrigBits}=${curW}w1(0=LvlTrig)`);
-            tokenSegments.push({ bits: lvlTrigBits, label: `0:Lvl` });
-
-            const lvlSeq = buildControlSequence(enc.level, curW);
-            for (const item of lvlSeq) {
-              for (const c of item.bits) bits.push(Number(c));
-              readLines.push(`${item.bits}=${curW}wLvl=${item.desc}->L${enc.level}`);
-              tokenSegments.push({ bits: item.bits, label: `L${enc.level}` });
-            }
-            curL = enc.level;
-          }
-        }
-
-        for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${enc.bits}=${curW}wL${curL}=${ch}(slot:${enc.slot})`);
-        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${curL}:${ch}` });
+      function emitToken(tokVal, w, label, desc) {
+        const b = tokVal.toString(2).padStart(w, "0");
+        for (const c of b) bits.push(Number(c));
+        readLines.push(`${b}=${w}${desc}`);
+        tokenSegments.push({ bits: b, label });
       }
 
-      return {
-        totalBits: bits.length,
-        bits,
-        readLines,
-        tokenSegments,
-        jumps
-      };
+      function switchToWindow(targetW, reasonChar, blockIdx) {
+        if (targetW === curW) return;
+        if (targetW === defW && curW !== defW) {
+          emitToken(11, curW, `11:WinDef->W${defW}`, `w11(WinDefault->W${defW})`);
+          curW = defW;
+          curL = defL;
+          curN = defN;
+          jumps.push(`Blk#${blockIdx + 1}: Reset 11 -> W${defW}, L${defL}^${defN} at [${reasonChar}]`);
+        } else {
+          emitToken(0, curW, "0:WinTrig", `${curW}null(WinTrig)`);
+          const seq = buildControlSequence(targetW, curW);
+          for (const item of seq) {
+            for (const c of item.bits) bits.push(Number(c));
+            readLines.push(`${item.bits}=${curW}wTarget=${item.desc}->W${targetW}`);
+            tokenSegments.push({ bits: item.bits, label: `W${targetW}` });
+          }
+          curW = targetW;
+          curL = 1;
+          curN = 1;
+          jumps.push(`Blk#${blockIdx + 1}: Jump -> W${targetW}, L${curL}^${curN} at [${reasonChar}]`);
+        }
+      }
+
+      function setLevelAndNested(targetL, targetN) {
+        if (targetL !== curL) {
+          if (targetL === defL && curL !== defL) {
+            emitToken(13, curW, `13:LvlDef->L${defL}`, `w13(LvlDefault->L${defL})`);
+            curL = defL;
+          } else {
+            emitToken(1, curW, "1:LvlTrig", `w1(0=LvlTrig)`);
+            const lSeq = buildControlSequence(targetL, curW);
+            for (const item of lSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wLvl=${item.desc}->L${targetL}`);
+              tokenSegments.push({ bits: item.bits, label: `L${targetL}` });
+            }
+            curL = targetL;
+          }
+        }
+        if (targetN !== curN) {
+          if (targetN === defN && curN !== defN) {
+            emitToken(12, curW, `12:NestDef->N${defN}`, `w12(NestDefault->N${defN})`);
+            curN = defN;
+          } else {
+            const nTrig = Math.min(10, Math.max(2, targetN + 1));
+            emitToken(nTrig, curW, `N:${targetN}`, `w${nTrig}(Nested->N${targetN})`);
+            const nSeq = buildControlSequence(targetN, curW);
+            for (const item of nSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wNest=${item.desc}->N${targetN}`);
+              tokenSegments.push({ bits: item.bits, label: `N${targetN}` });
+            }
+            curN = targetN;
+          }
+        }
+      }
+
+      for (let start = 0; start < units.length; start += blockSize) {
+        const end = Math.min(units.length, start + blockSize);
+        const blockIdx = Math.floor(start / blockSize);
+        const slice = units.slice(start, end);
+
+        let chosenW = curW;
+        if (forcedMode) {
+          chosenW = forcedMode;
+        } else {
+          // Compare W8, W9, W10 on this block (default start W8)
+          let asciiCount = 0;
+          let baraCount = 0;
+          let devaCount = 0;
+          for (const u of slice) {
+            if (isBarakhadiUnit(u)) baraCount += 1;
+            else {
+              const cp = u.codePointAt(0);
+              if (cp <= 0x7f) asciiCount += 1;
+              else if (cp >= 0x0900 && cp <= 0x097f) devaCount += 1;
+            }
+          }
+          if (asciiCount === slice.length) {
+            chosenW = 8;
+          } else if (baraCount >= devaCount && baraCount > 0) {
+            chosenW = 9;
+          } else if (devaCount > 0 || baraCount > 0) {
+            chosenW = 10;
+          } else {
+            chosenW = getCharWindow(slice[0].codePointAt(0));
+          }
+        }
+
+        for (let i = 0; i < slice.length; i++) {
+          const u = slice[i];
+          let codeVal = 0;
+          let unitW = chosenW;
+
+          if (isBarakhadiUnit(u)) {
+            codeVal = 10000 + getBarakhadiOrd(u);
+            unitW = chosenW === 8 ? 9 : chosenW;
+          } else {
+            codeVal = u.codePointAt(0);
+            if (forcedMode === 10) {
+              unitW = codeVal <= 0x7f || (codeVal >= 0x0900 && codeVal <= 0x097f) ? 10 : getCharWindow(codeVal);
+            } else if (forcedMode === 9) {
+              unitW = codeVal <= 0x7f ? 8 : (codeVal >= 0x0900 && codeVal <= 0x097f ? 9 : getCharWindow(codeVal));
+            } else if (forcedMode === 8) {
+              unitW = codeVal <= 0x7f ? 8 : getCharWindow(codeVal);
+            } else {
+              if (codeVal <= 0x7f && chosenW === 8) unitW = 8;
+              else if (codeVal <= 0x7f && chosenW === 10 && slice.length > 4) unitW = 10;
+              else if (codeVal <= 0x7f) unitW = 8;
+              else if (codeVal >= 0x0900 && codeVal <= 0x097f) unitW = chosenW === 9 ? 9 : 10;
+              else unitW = getCharWindow(codeVal);
+            }
+          }
+
+          if (unitW !== curW) {
+            switchToWindow(unitW, u, blockIdx);
+          }
+
+          const enc = encodeWindowCharBits(codeVal, curW);
+          const nestedLevel = Math.max(1, Math.ceil(Math.log2(enc.level + 1)));
+          setLevelAndNested(enc.level, nestedLevel);
+
+          const slotBits = enc.bits;
+          for (const c of slotBits) bits.push(Number(c));
+          readLines.push(`${slotBits}=${curW}wL${curL}^${curN}=${u}(slot:${enc.slot},tok:${enc.tokenVal})`);
+          tokenSegments.push({ bits: slotBits, label: `${curW}wL${curL}^${curN}:${u}` });
+        }
+      }
+
+      return { totalBits: bits.length, bits, readLines, tokenSegments, jumps };
     }
 
     function computeSmartJumpStream(text) {
       const normalStream = computeDwleStream(text);
-      const chars = tokenizeDwleUnits(text);
-      if (chars.length === 0) return normalStream;
-
-      const freq = new Map();
-      const maxRun = new Map();
-      let prevW = null;
-      let runLen = 0;
-
-      for (const ch of chars) {
-        const w = getCharWindow(ch.codePointAt(0));
-        freq.set(w, (freq.get(w) || 0) + 1);
-        if (w === prevW) {
-          runLen += 1;
-        } else {
-          prevW = w;
-          runLen = 1;
-        }
-        if (runLen > (maxRun.get(w) || 0)) {
-          maxRun.set(w, runLen);
-        }
-      }
-
-      const statParts = [...freq.entries()].map(([w, c]) => `W${w}(cnt:${c},maxRun:${maxRun.get(w) || 1})`);
+      const units = tokenizeDwleUnits(text);
+      if (units.length === 0) return normalStream;
 
       const candidates = [
-        { res: normalStream, label: "Normal DWLE", jumps: normalStream.flowLines.slice(1) },
-        { res: evalSmartJumpCandidate(chars, "stay"), label: "Smart Stay (Min Bits)", jumps: null },
-        { res: evalSmartJumpCandidate(chars, "hybrid-w10"), label: "Hybrid W10 Stay (Hindi + ASCII)", jumps: null },
-        { res: evalSmartJumpCandidate(chars, "return-on-run2"), label: "Smart Return Run>=2", jumps: null },
-        { res: evalSmartJumpCandidate(chars, "return-always"), label: "Smart Return W8", jumps: null }
+        { res: normalStream, label: "Normal DWLE (Start W8)" },
+        { res: evalBlockWindowStream(units, 100, null), label: "Smart Agent (100-unit W8/W9/W10 + L^n)" },
+        { res: evalBlockWindowStream(units, 1000, null), label: "Smart Agent (1000-unit W8/W9/W10 + L^n)" },
+        { res: evalBlockWindowStream(units, 100, 10), label: "Block-100 W10 Focus" },
+        { res: evalBlockWindowStream(units, 100, 9), label: "Block-100 W9 Focus" }
       ];
 
       let best = candidates[0];
@@ -1299,16 +1318,16 @@ W8 (8-bit):  [00001011 = A]</pre>
         }
       }
 
-      const jumpList = best.jumps !== null ? best.jumps : best.res.jumps;
-      const domW = getDominantWindow(chars);
+      const domW = getDominantWindow(units);
+      const jumpList = best.res.jumps && best.res.jumps.length ? best.res.jumps : ["Lowest bit window path selected"];
 
       return {
         totalBits: best.res.totalBits,
         bits: best.res.bits,
         dominantW: domW,
         flowLines: [
-          `${best.label} | ${best.res.totalBits} bits | ${statParts.join(", ")}`,
-          ...(jumpList.length ? jumpList : ["Lowest bit path selected"])
+          `${best.label} | ${best.res.totalBits} bits (UTF-8: ${new TextEncoder().encode(text).length * 8} bits)`,
+          ...jumpList
         ].slice(0, 14),
         readLines: best.res.readLines,
         tokenSegments: best.res.tokenSegments
