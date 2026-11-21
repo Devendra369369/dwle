@@ -771,6 +771,79 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
       };
     }
 
+    // Window-5 (W5): 5-bit compact control & jump layer
+    // Rules: 0 = Null, 1..10 = Nested Level (1..10), 11+ = Data / Window target (10 + w)
+    function encodeW5Control(codeVal) {
+      const clamped = Math.max(0, Math.min(31, codeVal));
+      return clamped.toString(2).padStart(5, "0");
+    }
+
+    function evalW5JumpCandidate(chars) {
+      let curW = 8;
+      let curLevel = 1;
+      const bits = [];
+      const readLines = [];
+      const tokenSegments = [];
+      const jumps = [];
+
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const cp = ch.codePointAt(0);
+        const charW = getCharWindow(cp);
+
+        let aheadRun = 1;
+        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
+          aheadRun += 1;
+        }
+
+        // If char is ASCII and already in a wider window with no consecutive non-W8 run ahead,
+        // use W5 compact null (00000) + W5 target (10 + 8 = 18 -> 10010) to jump back to W8 in 10 bits total
+        let targetW = curW;
+        if (charW === 8 && curW !== 8 && aheadRun >= 2) {
+          targetW = 8;
+        } else if (charW !== 8 && (aheadRun >= 2 || curW === charW)) {
+          targetW = charW;
+        } else if (charW !== 8 && curW === 8) {
+          // Single non-W8 char in W8: jump via W5 compact escape to targetW
+          targetW = charW;
+        }
+
+        if (targetW !== curW) {
+          const w5Null = encodeW5Control(0);       // 0 = Null
+          const w5Jump = encodeW5Control(10 + targetW); // 11+ rule: 10 + window ID (e.g. 18 for W8, 20 for W10)
+          const seq = w5Null + w5Jump;
+
+          for (const c of seq) bits.push(Number(c));
+          readLines.push(`${w5Null}=5wNull(0)`);
+          readLines.push(`${w5Jump}=5wJump(${10 + targetW}->W${targetW})`);
+          tokenSegments.push({ bits: seq, label: `W5->W${targetW}` });
+          jumps.push(`W5 Jump W${curW} -> W${targetW} (10 bits) at #${i + 1} [${ch}]`);
+          curW = targetW;
+        }
+
+        const enc = encodeWindowCharBits(cp, curW);
+        if (enc.level !== curLevel && enc.level >= 1 && enc.level <= 10) {
+          const lvlToken = encodeW5Control(enc.level); // 1..10 nested level marker
+          for (const c of lvlToken) bits.push(Number(c));
+          readLines.push(`${lvlToken}=5wLvl(${enc.level})`);
+          tokenSegments.push({ bits: lvlToken, label: `W5:L${enc.level}` });
+          curLevel = enc.level;
+        }
+
+        for (const c of enc.bits) bits.push(Number(c));
+        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+      }
+
+      return {
+        totalBits: bits.length,
+        bits,
+        readLines,
+        tokenSegments,
+        jumps
+      };
+    }
+
     function evalSmartJumpCandidate(chars, mode) {
       let curW = 8;
       const bits = [];
@@ -867,9 +940,10 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
 
       const candidates = [
         { res: normalStream, label: "Normal DWLE", jumps: normalStream.flowLines.slice(1) },
-        { res: evalSmartJumpCandidate(chars, "stay"), label: "Smart Stay (No Extra Return)", jumps: null },
-        { res: evalSmartJumpCandidate(chars, "return-on-run2"), label: "Smart Return on Run>=2", jumps: null },
-        { res: evalSmartJumpCandidate(chars, "return-always"), label: "Smart Return to W8", jumps: null }
+        { res: evalSmartJumpCandidate(chars, "stay"), label: "Smart Stay (Min Bits)", jumps: null },
+        { res: evalSmartJumpCandidate(chars, "return-on-run2"), label: "Smart Return Run>=2", jumps: null },
+        { res: evalSmartJumpCandidate(chars, "return-always"), label: "Smart Return W8", jumps: null },
+        { res: evalW5JumpCandidate(chars), label: "W5 Compact Jump (0 / 1..10 / 11+)", jumps: null }
       ];
 
       let best = candidates[0];
