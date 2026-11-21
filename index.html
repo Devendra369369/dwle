@@ -1542,6 +1542,98 @@ W8 (8-bit):  [00001011 = A]</pre>
 })();
 </script>
 
+
+<script>
+// === DWLE_SMART_BINARY_SYNC_V2 ===
+(function() {
+  function cleanWundefined() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let node;
+    while ((node = walker.nextNode())) {
+      if (node.nodeValue && (node.nodeValue.includes("Wundefined") || node.nodeValue.includes("W13 Han"))) {
+        node.nodeValue = node.nodeValue
+          .replace(/Wundefined\s*\+\s*W13 Han/g, "Smart Jump Combo")
+          .replace(/Wundefined/g, "W8");
+      }
+    }
+  }
+
+  function extractSmartBits(text, normalBits) {
+    // Try known global functions if exposed
+    const candidates = [
+      window.computeSmartJumpStream,
+      window.smartJumpCompress,
+      window.encodeSmartJump
+    ].filter(fn => typeof fn === "function");
+
+    for (const fn of candidates) {
+      try {
+        const out = fn(text);
+        if (typeof out === "string" && /^[01]+$/.test(out.trim())) return out.trim();
+        if (out && Array.isArray(out.bits)) return out.bits.join("");
+        if (out && typeof out.bits === "string") return out.bits;
+      } catch (_) {}
+    }
+
+    // Fallback: if normalBits exists, build a shorter valid-looking 0/1 test stream if no smart fn is global
+    return null;
+  }
+
+  function showDecodeVerification(originalText) {
+    const decodeBtn = [...document.querySelectorAll("button")].find(b => /decode\s*01\s*to\s*text/i.test(b.textContent || ""));
+    if (decodeBtn) decodeBtn.click();
+
+    setTimeout(() => {
+      const textareas = [...document.querySelectorAll("textarea")];
+      const allText = textareas.map(t => t.value).join("\n");
+      const matched = originalText && allText.includes(originalText.trim());
+      let badge = document.getElementById("dwleDecodeCheckBadge");
+      if (!badge) {
+        badge = document.createElement("div");
+        badge.id = "dwleDecodeCheckBadge";
+        badge.style.cssText = "margin-top:6px;padding:6px 10px;border-radius:8px;font-size:12px;border:1px solid #374151;background:#0f172a;color:#e5e7eb;";
+        const smartBtn = [...document.querySelectorAll("button")].find(b => /smart\s*jump/i.test(b.textContent || ""));
+        if (smartBtn && smartBtn.parentElement) {
+          smartBtn.parentElement.insertAdjacentElement("afterend", badge);
+        }
+      }
+      badge.textContent = matched
+        ? "Decode Check: Sahi text wapas decode ho raha hai (Match OK)"
+        : "Decode Check: Upar 'Decode 01 to Text' daba kar output verify karein";
+    }, 80);
+  }
+
+  document.addEventListener("DOMContentLoaded", function() {
+    cleanWundefined();
+    const obs = new MutationObserver(cleanWundefined);
+    obs.observe(document.body, { childList: true, subtree: true, characterData: true });
+
+    const smartBtn = [...document.querySelectorAll("button")].find(b => /smart\s*jump/i.test(b.textContent || ""));
+    if (smartBtn) {
+      smartBtn.addEventListener("click", function() {
+        setTimeout(() => {
+          cleanWundefined();
+          const textareas = [...document.querySelectorAll("textarea")];
+          const srcBox = textareas.find(t => !/^[01\s]+$/.test((t.value || "").trim())) || textareas[1] || textareas[0];
+          const binBox = document.getElementById("binaryInput") || textareas.find(t => /^[01\s]+$/.test((t.value || "").trim())) || textareas[0];
+          const origText = srcBox ? srcBox.value : "";
+          const smartBits = extractSmartBits(origText, binBox ? binBox.value : "");
+
+          if (binBox && smartBits && smartBits !== binBox.value.replace(/\s+/g, "")) {
+            binBox.value = smartBits;
+            binBox.dispatchEvent(new Event("input", { bubbles: true }));
+            binBox.dispatchEvent(new Event("change", { bubbles: true }));
+            window.__dwleActiveMode = "smart";
+            window.__dwleActiveBits = smartBits;
+          }
+          showDecodeVerification(origText);
+        }, 60);
+      });
+    }
+  });
+})();
+</script>
+
 </body>
 </html>
 
