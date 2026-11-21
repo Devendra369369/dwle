@@ -705,12 +705,11 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
     estimateBits();
   
     function computeSmartJumpStream(text) {
+      const normalStream = computeDwleStream(text);
       const chars = [...text];
-      if (chars.length === 0) {
-        return computeDwleStream("");
-      }
+      if (chars.length === 0) return normalStream;
 
-      // Count dominant window & longest consecutive runs per window
+      // Count frequency and max consecutive run per window
       const freq = new Map();
       const maxRun = new Map();
       let prevW = null;
@@ -730,33 +729,57 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         }
       }
 
-      let domW = 8;
-      let bestScore = -1;
-      for (const [w, cnt] of freq.entries()) {
-        const score = cnt * 2 + (maxRun.get(w) || 0) * 3;
-        if (score > bestScore) {
-          bestScore = score;
-          domW = w;
+      // Default anchor is W8 unless a non-W8 window has consecutive run >= 2 and dominates
+      let anchorW = 8;
+      let bestNon8Run = 0;
+      let bestNon8W = 8;
+      for (const [w, mr] of maxRun.entries()) {
+        if (w !== 8 && mr >= 2 && mr > bestNon8Run) {
+          bestNon8Run = mr;
+          bestNon8W = w;
         }
+      }
+      const w8Count = freq.get(8) || 0;
+      if (bestNon8W !== 8 && (freq.get(bestNon8W) || 0) > w8Count) {
+        anchorW = bestNon8W;
       }
 
       let curW = 8;
       const bits = [];
-      const flowLines = [`Smart Jump Anchor: W${domW} (Han -> W13)`];
+      const flowLines = [`Default: W8 | Consecutive Non-W8 (>=2): ${bestNon8W !== 8 ? "W" + bestNon8W + " (run " + bestNon8Run + ")" : "None"}`];
       const readLines = [];
       const tokenSegments = [];
 
       for (let i = 0; i < chars.length; i++) {
         const ch = chars[i];
         const cp = ch.codePointAt(0);
-        let wHere = getEffectiveWindow(cp, curW, domW);
+        const charW = getCharWindow(cp);
 
-        // Lookahead: if current is W10/W13/W17 and next char is ASCII while domW is 8 and next isn't W10/W13/W17, return to W8
-        if (curW !== 8 && cp <= 0x7f && domW === 8) {
-          const nextCh = chars[i + 1];
-          const nextW = nextCh ? getCharWindow(nextCh.codePointAt(0)) : 8;
-          if (nextW === 8) {
+        // Consecutive run of current character's window starting at index i
+        let aheadRun = 1;
+        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
+          aheadRun += 1;
+        }
+
+        let wHere = curW;
+
+        if (charW === 8) {
+          // If currently in another window (like W10 after कक) and ASCII/W8 characters come, jump back to W8
+          if (curW !== 8) {
             wHere = 8;
+          }
+        } else {
+          // Non-W8 character (e.g. क in W10):
+          // Only jump to charW when consecutive run >= 2 (e.g. कक), or if already in charW
+          if (aheadRun >= 2 || curW === charW) {
+            wHere = charW;
+          } else {
+            // Single non-W8 character: keep current window if it can encode, or use normal DWLE fallback
+            wHere = getEffectiveWindow(cp, curW, anchorW);
+            if (wHere === 8) {
+              // Cannot encode non-ASCII in W8; fall back to normalStream so bits aren't inflated
+              return normalStream;
+            }
           }
         }
 
@@ -769,7 +792,7 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
           readLines.push(`${nullBits}=${curW}nullw`);
           readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
           tokenSegments.push({ bits: nullBits + wCodeBits, label: `jump->W${wHere}` });
-          flowLines.push(`Smart Jump W${curW} -> W${wHere} at char #${i + 1} (${ch})`);
+          flowLines.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
           curW = wHere;
         }
 
@@ -779,10 +802,22 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
       }
 
+      // If jumping made bits worse than normal DWLE, keep normal DWLE so bits don't increase
+      if (bits.length > normalStream.totalBits) {
+        return {
+          ...normalStream,
+          dominantW: anchorW,
+          flowLines: [
+            `Default: W8 (Single non-W8 char jump skipped to save bits)`,
+            ...normalStream.flowLines
+          ].slice(0, 14)
+        };
+      }
+
       return {
         totalBits: bits.length,
         bits,
-        dominantW: domW,
+        dominantW: anchorW,
         flowLines: flowLines.slice(0, 14),
         readLines,
         tokenSegments
