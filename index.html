@@ -927,6 +927,13 @@ W8 (8-bit):  [00001011 = A]</pre>
       };
     }
 
+    function renderBinaryComposer(streamObj) {
+      if (!streamObj) return;
+      const bitStr = Array.isArray(streamObj.bits) ? streamObj.bits.join("") : String(streamObj.bits || "");
+      const readLines = Array.isArray(streamObj.readLines) ? streamObj.readLines : [];
+      setComposerBits(bitStr, readLines);
+    }
+
     function optimizeWindowJump() {
       const sampleEl = document.getElementById("sampleText");
       const text = sampleEl ? (sampleEl.value || "") : "";
