@@ -389,17 +389,17 @@ W8 (8-bit):  [00001011 = A]</pre>
       let idx0 = 0;
 
       if (w === 8) {
-        idx0 = cp < cap ? cp : 63; // '?' fallback if out of range
+        idx0 = cp < cap ? cp : 63;
       } else if (w === 9 || w === 10) {
         if (cp >= 0x0900 && cp <= 0x097F) {
-          idx0 = (cp - 0x0900);
+          idx0 = cp - 0x0900;       // 0..127
         } else if (cp < 128) {
-          idx0 = 128 + cp;
+          idx0 = 128 + cp;          // 128..255
         } else {
-          idx0 = cp % cap;
+          idx0 = 256 + cp;          // 256+ (uses level >= 1 cleanly)
         }
       } else {
-        idx0 = cp % cap;
+        idx0 = cp;
       }
 
       const level = Math.floor(idx0 / cap) + 1;
@@ -424,9 +424,11 @@ W8 (8-bit):  [00001011 = A]</pre>
           return String.fromCodePoint(0x0900 + idx0);
         } else if (idx0 < 256) {
           return String.fromCodePoint(idx0 - 128);
+        } else {
+          return String.fromCodePoint(idx0 - 256);
         }
       }
-      return String.fromCodePoint(Math.max(32, idx0));
+      return String.fromCodePoint(idx0);
     }
 
     function buildControlSequence(targetNum, w) {
@@ -575,7 +577,7 @@ W8 (8-bit):  [00001011 = A]</pre>
         const first = readWidthToken(w);
         if (first === null) return null;
         if (first >= 11) {
-          return first - 11; // 11=0, 12=1, ..., 21=10
+          return first - 11; // 11=0, 12=1, 13=2, ..., 21=10
         }
         let numStr = "";
         let cur = first;
@@ -588,50 +590,42 @@ W8 (8-bit):  [00001011 = A]</pre>
         return numStr.length ? parseInt(numStr, 10) : 0;
       }
 
-      while (pos < clean.length) {
-        // Check 5-bit W5 compact escape: "00000" followed by 5-bit target (11 + num)
-        if (pos + 10 <= clean.length && clean.slice(pos, pos + 5) === "00000") {
-          const w5TargetVal = parseInt(clean.slice(pos + 5, pos + 10), 2);
-          if (w5TargetVal >= 11) {
-            pos += 10;
-            const targetW = w5TargetVal - 11;
-            if (targetW >= 5 && targetW <= 21) {
-              curW = targetW;
-              curL = 1;
-            }
-            continue;
-          }
-        }
-
-        if (pos + curW > clean.length) break;
+      while (pos + curW <= clean.length) {
         const tok = readWidthToken(curW);
         if (tok === null) break;
 
         if (tok === 0) {
+          // null -> Window code
           const nextW = readControlNumber(curW);
           if (nextW !== null && nextW >= 5 && nextW <= 21) {
             curW = nextW;
             curL = 1;
           }
         } else if (tok === 1) {
+          // 1 - 1 = 0 -> Level code
           const nextL = readControlNumber(curW);
           if (nextL !== null && nextL >= 1) {
             curL = nextL;
           }
         } else if (tok >= 2 && tok <= 10) {
+          // 2..10 -> 1..9 -> Nested code
           const nextN = readControlNumber(curW);
           if (nextN !== null && nextN >= 1) {
             curN = nextN;
           }
         } else if (tok === 11) {
+          // 11 -> Window Default
           curW = defW;
           curL = defL;
           curN = defN;
         } else if (tok === 12) {
+          // 12 -> Nested Default
           curN = defN;
         } else if (tok === 13) {
+          // 13 -> Level Default
           curL = defL;
         } else if (tok >= 14) {
+          // 14 .. 2^n - 1 -> Character slot = tok - 13
           const slot = tok - 13;
           out += decodeWindowCharSlot(curW, curL, slot);
         }
@@ -1062,7 +1056,9 @@ W8 (8-bit):  [00001011 = A]</pre>
         }
 
         let wHere = curW;
-        if (charW === 8) {
+        if (mode === "hybrid-w10") {
+          wHere = charW <= 10 ? 10 : charW;
+        } else if (charW === 8) {
           if (curW !== 8) {
             if (mode === "stay") wHere = curW;
             else if (mode === "return-on-run2") wHere = aheadRun >= 2 ? 8 : curW;
@@ -1071,7 +1067,9 @@ W8 (8-bit):  [00001011 = A]</pre>
             wHere = 8;
           }
         } else {
-          if (aheadRun >= 2 || curW === charW) {
+          if ((curW === 9 || curW === 10) && charW <= curW) {
+            wHere = curW;
+          } else if (aheadRun >= 2 || curW === charW) {
             wHere = charW;
           } else {
             wHere = getEffectiveWindow(cp, curW, curW);
@@ -1081,7 +1079,6 @@ W8 (8-bit):  [00001011 = A]</pre>
 
         if (wHere !== curW) {
           if (wHere === defW && curW !== defW) {
-            // Single token 11 = Window Default reset!
             const resetBits = (11).toString(2).padStart(curW, "0");
             for (const c of resetBits) bits.push(Number(c));
             readLines.push(`${resetBits}=${curW}w11(WinDefault->W${defW})`);
@@ -1174,9 +1171,9 @@ W8 (8-bit):  [00001011 = A]</pre>
       const candidates = [
         { res: normalStream, label: "Normal DWLE", jumps: normalStream.flowLines.slice(1) },
         { res: evalSmartJumpCandidate(chars, "stay"), label: "Smart Stay (Min Bits)", jumps: null },
+        { res: evalSmartJumpCandidate(chars, "hybrid-w10"), label: "Hybrid W10 Stay (Hindi + ASCII)", jumps: null },
         { res: evalSmartJumpCandidate(chars, "return-on-run2"), label: "Smart Return Run>=2", jumps: null },
-        { res: evalSmartJumpCandidate(chars, "return-always"), label: "Smart Return W8", jumps: null },
-        { res: evalW5JumpCandidate(chars), label: "W5 Compact Jump (0 / 1..10 / 11+)", jumps: null }
+        { res: evalSmartJumpCandidate(chars, "return-always"), label: "Smart Return W8", jumps: null }
       ];
 
       let best = candidates[0];
