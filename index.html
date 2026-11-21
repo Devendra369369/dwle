@@ -557,12 +557,12 @@ W8 (8-bit):  [00001011 = A]</pre>
       let curW = 8;
       let curL = 1;
       let curN = 1;
-      let defW = 8;
-      let defL = 1;
-      let defN = 1;
+      const defW = 8;
+      const defL = 1;
+      const defN = 1;
       let out = "";
 
-      function readToken(w) {
+      function readWidthToken(w) {
         if (pos + w > clean.length) return null;
         const slice = clean.slice(pos, pos + w);
         pos += w;
@@ -570,59 +570,66 @@ W8 (8-bit):  [00001011 = A]</pre>
       }
 
       function readControlNumber(w) {
-        const first = readToken(w);
+        const first = readWidthToken(w);
         if (first === null) return null;
         if (first >= 11) {
-          return first - 11; // 11=0, 12=1, 13=2, ..., 21=10
+          return first - 11; // 11=0, 12=1, ..., 21=10
         }
-        // Chained digits 1..10 (0..9) terminated by 0 (null)
         let numStr = "";
         let cur = first;
         while (cur !== null && cur !== 0) {
           if (cur >= 1 && cur <= 10) {
             numStr += String(cur - 1);
           }
-          cur = readToken(w);
+          cur = readWidthToken(w);
         }
         return numStr.length ? parseInt(numStr, 10) : 0;
       }
 
-      while (pos + curW <= clean.length) {
-        const tok = readToken(curW);
+      while (pos < clean.length) {
+        // Check 5-bit W5 compact escape: "00000" followed by 5-bit target (11 + num)
+        if (pos + 10 <= clean.length && clean.slice(pos, pos + 5) === "00000") {
+          const w5TargetVal = parseInt(clean.slice(pos + 5, pos + 10), 2);
+          if (w5TargetVal >= 11) {
+            pos += 10;
+            const targetW = w5TargetVal - 11;
+            if (targetW >= 5 && targetW <= 21) {
+              curW = targetW;
+              curL = 1;
+            }
+            continue;
+          }
+        }
+
+        if (pos + curW > clean.length) break;
+        const tok = readWidthToken(curW);
         if (tok === null) break;
 
         if (tok === 0) {
-          // null -> Window code
           const nextW = readControlNumber(curW);
           if (nextW !== null && nextW >= 5 && nextW <= 21) {
             curW = nextW;
             curL = 1;
           }
         } else if (tok === 1) {
-          // 1 - 1 = 0 -> Level code
           const nextL = readControlNumber(curW);
           if (nextL !== null && nextL >= 1) {
             curL = nextL;
           }
         } else if (tok >= 2 && tok <= 10) {
-          // 2..10 -> 1..9 -> Nested code
           const nextN = readControlNumber(curW);
           if (nextN !== null && nextN >= 1) {
             curN = nextN;
           }
         } else if (tok === 11) {
-          // 11 -> Window Default
           curW = defW;
           curL = defL;
           curN = defN;
         } else if (tok === 12) {
-          // 12 -> Nested Default
           curN = defN;
         } else if (tok === 13) {
-          // 13 -> Level Default
           curL = defL;
         } else if (tok >= 14) {
-          // 14 .. 2^n - 1 -> Character slot = tok - 13
           const slot = tok - 13;
           out += decodeWindowCharSlot(curW, curL, slot);
         }
@@ -861,43 +868,56 @@ W8 (8-bit):  [00001011 = A]</pre>
           aheadRun += 1;
         }
 
-        // If char is ASCII and already in a wider window with no consecutive non-W8 run ahead,
-        // use W5 compact null (00000) + W5 target (10 + 8 = 18 -> 10010) to jump back to W8 in 10 bits total
         let targetW = curW;
         if (charW === 8 && curW !== 8 && aheadRun >= 2) {
           targetW = 8;
         } else if (charW !== 8 && (aheadRun >= 2 || curW === charW)) {
           targetW = charW;
         } else if (charW !== 8 && curW === 8) {
-          // Single non-W8 char in W8: jump via W5 compact escape to targetW
           targetW = charW;
         }
 
         if (targetW !== curW) {
-          const w5Null = encodeW5Control(0);       // 0 = Null
-          const w5Jump = encodeW5Control(10 + targetW); // 11+ rule: 10 + window ID (e.g. 18 for W8, 20 for W10)
+          const w5Null = encodeW5Control(0);            // 00000 = 5-bit W5 escape trigger
+          const ctrlVal = 11 + targetW;                 // 11 + number rule (11=0..21=10)
+          const w5Jump = encodeW5Control(ctrlVal);      // 5-bit target token
           const seq = w5Null + w5Jump;
 
           for (const c of seq) bits.push(Number(c));
-          readLines.push(`${w5Null}=5wNull(0)`);
-          readLines.push(`${w5Jump}=5wJump(${10 + targetW}->W${targetW})`);
+          readLines.push(`${w5Null}=5wEsc(0)`);
+          readLines.push(`${w5Jump}=5wJump(${ctrlVal}->W${targetW})`);
           tokenSegments.push({ bits: seq, label: `W5->W${targetW}` });
           jumps.push(`W5 Jump W${curW} -> W${targetW} (10 bits) at #${i + 1} [${ch}]`);
           curW = targetW;
+          curLevel = 1;
         }
 
         const enc = encodeWindowCharBits(cp, curW);
-        if (enc.level !== curLevel && enc.level >= 1 && enc.level <= 10) {
-          const lvlToken = encodeW5Control(enc.level); // 1..10 nested level marker
-          for (const c of lvlToken) bits.push(Number(c));
-          readLines.push(`${lvlToken}=5wLvl(${enc.level})`);
-          tokenSegments.push({ bits: lvlToken, label: `W5:L${enc.level}` });
+        if (enc.level !== curLevel) {
+          const lvlDefBits = (13).toString(2).padStart(curW, "0");
+          if (enc.level === 1 && curLevel !== 1) {
+            for (const c of lvlDefBits) bits.push(Number(c));
+            readLines.push(`${lvlDefBits}=${curW}w13(LvlDefault->L1)`);
+            tokenSegments.push({ bits: lvlDefBits, label: `13:LvlDef` });
+          } else {
+            const lvlTrigBits = (1).toString(2).padStart(curW, "0");
+            for (const c of lvlTrigBits) bits.push(Number(c));
+            readLines.push(`${lvlTrigBits}=${curW}w1(0=LvlTrig)`);
+            tokenSegments.push({ bits: lvlTrigBits, label: `0:LvlTrig` });
+
+            const ctrlSeq = buildControlSequence(enc.level, curW);
+            for (const item of ctrlSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wLvl=${item.desc}->L${enc.level}`);
+              tokenSegments.push({ bits: item.bits, label: `L${enc.level}` });
+            }
+          }
           curLevel = enc.level;
         }
 
         for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
-        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+        readLines.push(`${enc.bits}=${curW}wL${curLevel}=${ch}(slot:${enc.slot})`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${curLevel}:${ch}` });
       }
 
       return {
