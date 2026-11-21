@@ -704,12 +704,78 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
     }
     estimateBits();
   
+    function runJumpStrategy(chars, stayOnTargetWindow) {
+      let curW = 8;
+      const bits = [];
+      const readLines = [];
+      const tokenSegments = [];
+      const jumps = [];
+
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const cp = ch.codePointAt(0);
+        const charW = getCharWindow(cp);
+
+        let aheadRun = 1;
+        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
+          aheadRun += 1;
+        }
+
+        let wHere = curW;
+
+        if (charW === 8) {
+          // If stayOnTargetWindow is true (e.g. after कक in W10), keep curW if it supports ASCII (W9/W10/W13/W17)
+          if (curW !== 8 && !stayOnTargetWindow) {
+            wHere = 8;
+          } else if (curW === 8) {
+            wHere = 8;
+          }
+        } else {
+          // Jump to target window for consecutive run >= 2 or if already in that window
+          if (aheadRun >= 2 || curW === charW) {
+            wHere = charW;
+          } else {
+            wHere = getEffectiveWindow(cp, curW, curW);
+            if (wHere === 8) {
+              // Single non-W8 char cannot fit in W8; allow single jump only if cheaper overall
+              wHere = charW;
+            }
+          }
+        }
+
+        if (wHere !== curW) {
+          const nullBits = "0".repeat(curW);
+          const wCodeVal = 10 + wHere;
+          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
+
+          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
+          readLines.push(`${nullBits}=${curW}nullw`);
+          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
+          tokenSegments.push({ bits: nullBits + wCodeBits, label: `jump->W${wHere}` });
+          jumps.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
+          curW = wHere;
+        }
+
+        const enc = encodeWindowCharBits(cp, curW);
+        for (const c of enc.bits) bits.push(Number(c));
+        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+      }
+
+      return {
+        totalBits: bits.length,
+        bits,
+        readLines,
+        tokenSegments,
+        jumps
+      };
+    }
+
     function computeSmartJumpStream(text) {
       const normalStream = computeDwleStream(text);
       const chars = [...text];
       if (chars.length === 0) return normalStream;
 
-      // Count frequency and max consecutive run per window
       const freq = new Map();
       const maxRun = new Map();
       let prevW = null;
@@ -729,98 +795,47 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
         }
       }
 
-      // Default anchor is W8 unless a non-W8 window has consecutive run >= 2 and dominates
-      let anchorW = 8;
-      let bestNon8Run = 0;
-      let bestNon8W = 8;
-      for (const [w, mr] of maxRun.entries()) {
-        if (w !== 8 && mr >= 2 && mr > bestNon8Run) {
-          bestNon8Run = mr;
-          bestNon8W = w;
-        }
+      const statParts = [...freq.entries()].map(([w, c]) => `W${w}(cnt:${c},maxRun:${maxRun.get(w) || 1})`);
+
+      // Candidate 1: Stay in target window (no costly return jump back to W8 if W10/etc. already active)
+      const stayStrategy = runJumpStrategy(chars, true);
+      // Candidate 2: Return to W8 when W8 characters appear
+      const returnStrategy = runJumpStrategy(chars, false);
+
+      // Pick the method with the fewest bits among smart candidates and normal stream
+      let best = {
+        totalBits: normalStream.totalBits,
+        bits: normalStream.bits,
+        readLines: normalStream.readLines,
+        tokenSegments: normalStream.tokenSegments,
+        modeLabel: "Normal DWLE (Min Bits)",
+        jumps: normalStream.flowLines.slice(1)
+      };
+
+      if (stayStrategy.totalBits <= best.totalBits) {
+        best = {
+          ...stayStrategy,
+          modeLabel: "Smart Stay-Window (Min Bits)"
+        };
       }
-      const w8Count = freq.get(8) || 0;
-      if (bestNon8W !== 8 && (freq.get(bestNon8W) || 0) > w8Count) {
-        anchorW = bestNon8W;
-      }
-
-      let curW = 8;
-      const bits = [];
-      const flowLines = [`Default: W8 | Consecutive Non-W8 (>=2): ${bestNon8W !== 8 ? "W" + bestNon8W + " (run " + bestNon8Run + ")" : "None"}`];
-      const readLines = [];
-      const tokenSegments = [];
-
-      for (let i = 0; i < chars.length; i++) {
-        const ch = chars[i];
-        const cp = ch.codePointAt(0);
-        const charW = getCharWindow(cp);
-
-        // Consecutive run of current character's window starting at index i
-        let aheadRun = 1;
-        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
-          aheadRun += 1;
-        }
-
-        let wHere = curW;
-
-        if (charW === 8) {
-          // If currently in another window (like W10 after कक) and ASCII/W8 characters come, jump back to W8
-          if (curW !== 8) {
-            wHere = 8;
-          }
-        } else {
-          // Non-W8 character (e.g. क in W10):
-          // Only jump to charW when consecutive run >= 2 (e.g. कक), or if already in charW
-          if (aheadRun >= 2 || curW === charW) {
-            wHere = charW;
-          } else {
-            // Single non-W8 character: keep current window if it can encode, or use normal DWLE fallback
-            wHere = getEffectiveWindow(cp, curW, anchorW);
-            if (wHere === 8) {
-              // Cannot encode non-ASCII in W8; fall back to normalStream so bits aren't inflated
-              return normalStream;
-            }
-          }
-        }
-
-        if (wHere !== curW) {
-          const nullBits = "0".repeat(curW);
-          const wCodeVal = 10 + wHere;
-          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
-
-          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
-          readLines.push(`${nullBits}=${curW}nullw`);
-          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
-          tokenSegments.push({ bits: nullBits + wCodeBits, label: `jump->W${wHere}` });
-          flowLines.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
-          curW = wHere;
-        }
-
-        const enc = encodeWindowCharBits(cp, curW);
-        for (const c of enc.bits) bits.push(Number(c));
-        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
-        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
-      }
-
-      // If jumping made bits worse than normal DWLE, keep normal DWLE so bits don't increase
-      if (bits.length > normalStream.totalBits) {
-        return {
-          ...normalStream,
-          dominantW: anchorW,
-          flowLines: [
-            `Default: W8 (Single non-W8 char jump skipped to save bits)`,
-            ...normalStream.flowLines
-          ].slice(0, 14)
+      if (returnStrategy.totalBits < best.totalBits) {
+        best = {
+          ...returnStrategy,
+          modeLabel: "Smart Return-W8 (Min Bits)"
         };
       }
 
+      const domW = getDominantWindow(chars);
       return {
-        totalBits: bits.length,
-        bits,
-        dominantW: anchorW,
-        flowLines: flowLines.slice(0, 14),
-        readLines,
-        tokenSegments
+        totalBits: best.totalBits,
+        bits: best.bits,
+        dominantW: domW,
+        flowLines: [
+          `${best.modeLabel} | ${best.totalBits} bits | ${statParts.join(", ")}`,
+          ...(best.jumps.length ? best.jumps : ["No extra jump needed (lowest bits)"])
+        ].slice(0, 14),
+        readLines: best.readLines,
+        tokenSegments: best.tokenSegments
       };
     }
 
