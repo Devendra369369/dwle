@@ -771,6 +771,74 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
       };
     }
 
+    function evalSmartJumpCandidate(chars, mode) {
+      let curW = 8;
+      const bits = [];
+      const readLines = [];
+      const tokenSegments = [];
+      const jumps = [];
+
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const cp = ch.codePointAt(0);
+        const charW = getCharWindow(cp);
+
+        let aheadRun = 1;
+        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
+          aheadRun += 1;
+        }
+
+        let wHere = curW;
+
+        if (charW === 8) {
+          if (curW !== 8) {
+            if (mode === "stay") {
+              wHere = curW;
+            } else if (mode === "return-on-run2") {
+              wHere = aheadRun >= 2 ? 8 : curW;
+            } else if (mode === "return-always") {
+              wHere = 8;
+            }
+          } else {
+            wHere = 8;
+          }
+        } else {
+          if (aheadRun >= 2 || curW === charW) {
+            wHere = charW;
+          } else {
+            wHere = getEffectiveWindow(cp, curW, curW);
+            if (wHere === 8) wHere = charW;
+          }
+        }
+
+        if (wHere !== curW) {
+          const nullBits = "0".repeat(curW);
+          const wCodeVal = 10 + wHere;
+          const wCodeBits = wCodeVal.toString(2).padStart(curW, "0");
+
+          for (const c of (nullBits + wCodeBits)) bits.push(Number(c));
+          readLines.push(`${nullBits}=${curW}nullw`);
+          readLines.push(`${wCodeBits}=${curW}w${wCodeVal}c${wHere}`);
+          tokenSegments.push({ bits: nullBits + wCodeBits, label: `jump->W${wHere}` });
+          jumps.push(`Jump W${curW} -> W${wHere} at #${i + 1} [${ch}] (run:${aheadRun})`);
+          curW = wHere;
+        }
+
+        const enc = encodeWindowCharBits(cp, curW);
+        for (const c of enc.bits) bits.push(Number(c));
+        readLines.push(`${enc.bits}=${curW}wL${enc.level}=${ch}${enc.offset}`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${enc.level}:${ch}` });
+      }
+
+      return {
+        totalBits: bits.length,
+        bits,
+        readLines,
+        tokenSegments,
+        jumps
+      };
+    }
+
     function computeSmartJumpStream(text) {
       const normalStream = computeDwleStream(text);
       const chars = [...text];
@@ -797,45 +865,33 @@ ${clean.length} bits &rarr; ${[...decoded].length} chars | ` +
 
       const statParts = [...freq.entries()].map(([w, c]) => `W${w}(cnt:${c},maxRun:${maxRun.get(w) || 1})`);
 
-      // Candidate 1: Stay in target window (no costly return jump back to W8 if W10/etc. already active)
-      const stayStrategy = runJumpStrategy(chars, true);
-      // Candidate 2: Return to W8 when W8 characters appear
-      const returnStrategy = runJumpStrategy(chars, false);
+      const candidates = [
+        { res: normalStream, label: "Normal DWLE", jumps: normalStream.flowLines.slice(1) },
+        { res: evalSmartJumpCandidate(chars, "stay"), label: "Smart Stay (No Extra Return)", jumps: null },
+        { res: evalSmartJumpCandidate(chars, "return-on-run2"), label: "Smart Return on Run>=2", jumps: null },
+        { res: evalSmartJumpCandidate(chars, "return-always"), label: "Smart Return to W8", jumps: null }
+      ];
 
-      // Pick the method with the fewest bits among smart candidates and normal stream
-      let best = {
-        totalBits: normalStream.totalBits,
-        bits: normalStream.bits,
-        readLines: normalStream.readLines,
-        tokenSegments: normalStream.tokenSegments,
-        modeLabel: "Normal DWLE (Min Bits)",
-        jumps: normalStream.flowLines.slice(1)
-      };
-
-      if (stayStrategy.totalBits <= best.totalBits) {
-        best = {
-          ...stayStrategy,
-          modeLabel: "Smart Stay-Window (Min Bits)"
-        };
-      }
-      if (returnStrategy.totalBits < best.totalBits) {
-        best = {
-          ...returnStrategy,
-          modeLabel: "Smart Return-W8 (Min Bits)"
-        };
+      let best = candidates[0];
+      for (let i = 1; i < candidates.length; i++) {
+        if (candidates[i].res.totalBits < best.res.totalBits) {
+          best = candidates[i];
+        }
       }
 
+      const jumpList = best.jumps !== null ? best.jumps : best.res.jumps;
       const domW = getDominantWindow(chars);
+
       return {
-        totalBits: best.totalBits,
-        bits: best.bits,
+        totalBits: best.res.totalBits,
+        bits: best.res.bits,
         dominantW: domW,
         flowLines: [
-          `${best.modeLabel} | ${best.totalBits} bits | ${statParts.join(", ")}`,
-          ...(best.jumps.length ? best.jumps : ["No extra jump needed (lowest bits)"])
+          `${best.label} | ${best.res.totalBits} bits | ${statParts.join(", ")}`,
+          ...(jumpList.length ? jumpList : ["Lowest bit path selected"])
         ].slice(0, 14),
-        readLines: best.readLines,
-        tokenSegments: best.tokenSegments
+        readLines: best.res.readLines,
+        tokenSegments: best.res.tokenSegments
       };
     }
 
