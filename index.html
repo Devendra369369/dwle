@@ -534,25 +534,30 @@ W8 (8-bit):  [00001011 = A]</pre>
           return ORD_IDX_TO_SYL.get(ord);
         }
       }
-      if (w === 13 && idx0 >= 0 && idx0 <= (0x6d65 - 0x4e00)) {
-        return String.fromCodePoint(0x4e00 + idx0);
+
+      if ((w === 13 || w === 17) && idx0 >= 0) {
+        const cpOut = 0x4e00 + idx0;
+        if (cpOut <= 0x10ffff) {
+          return String.fromCodePoint(cpOut);
+        }
       }
-      if (w === 17 && idx0 >= 0 && idx0 <= (0x2ffff - 0x4e00)) {
-        return String.fromCodePoint(0x4e00 + idx0);
+
+      if (idx0 >= 0 && idx0 < 128) {
+        return String.fromCodePoint(0x0900 + idx0);
       }
+
       if (idx0 >= 128 && idx0 < 256) {
         return String.fromCodePoint(0x0900 + (idx0 - 128));
       }
-      if (idx0 >= 0 && idx0 < 128) {
-        return String.fromCodePoint(idx0);
-      }
-      if (idx0 >= 20000) {
-        const origCp = idx0 - 20000;
-        return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, origCp)));
-      }
-      return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
-    }
 
+      if (cpFallbackSlot = (idx0 >= 0 ? idx0 : 0)) {
+        try {
+          if (cpFallbackSlot <= 0x10ffff) return String.fromCodePoint(cpFallbackSlot);
+        } catch (_) {}
+      }
+
+      return "";
+    }
     function buildControlSequence(targetNum, w) {
       // targetNum is encoded using 11 + number (11=0, 12=1, ..., 21=10)
       // If 11 + targetNum fits in 12..(2^w - 1), emit single token; otherwise chain digits (1..10 -> 0..9) + null
