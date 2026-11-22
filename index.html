@@ -498,7 +498,11 @@ W8 (8-bit):  [00001011 = A]</pre>
       const cap = getWindowCharCapacity(w);
       let idx0 = 0;
 
-      if (cp >= 10000 && cp < 20000) {
+      if (w === 13 && cp >= 0x4e00 && cp <= 0x6d65) {
+        idx0 = cp - 0x4e00; // Direct L1 slot (0..8037) in W13!
+      } else if (w === 17 && cp >= 0x4e00 && cp <= 0x2ffff) {
+        idx0 = cp - 0x4e00; // Direct L1 slot for ~1 lakh CJK characters in W17!
+      } else if (cp >= 10000 && cp < 20000) {
         idx0 = cp;
       } else if (cp >= 0x0900 && cp <= 0x097F) {
         idx0 = 128 + (cp - 0x0900);
@@ -529,6 +533,12 @@ W8 (8-bit):  [00001011 = A]</pre>
         if (typeof ORD_IDX_TO_SYL !== "undefined" && ORD_IDX_TO_SYL.has(ord)) {
           return ORD_IDX_TO_SYL.get(ord);
         }
+      }
+      if (w === 13 && idx0 >= 0 && idx0 <= (0x6d65 - 0x4e00)) {
+        return String.fromCodePoint(0x4e00 + idx0);
+      }
+      if (w === 17 && idx0 >= 0 && idx0 <= (0x2ffff - 0x4e00)) {
+        return String.fromCodePoint(0x4e00 + idx0);
       }
       if (idx0 >= 128 && idx0 < 256) {
         return String.fromCodePoint(0x0900 + (idx0 - 128));
@@ -1321,7 +1331,9 @@ W8 (8-bit):  [00001011 = A]</pre>
         }
 
         if (forceStartW && forceStartW !== curW) {
-          pushCtrl(buildControlSequence(forceStartW - 10, curW), "WinTrig");
+          bits.push("0".repeat(curW));
+          readLines.push(`${"0".repeat(curW)}=${curW}null(WinTrig)`);
+          pushCtrl(buildControlSequence(forceStartW - 10, curW), `Target=${11 + (forceStartW - 10)}->W${forceStartW}`);
           curW = forceStartW;
           curL = 1;
           jumps++;
@@ -1381,8 +1393,8 @@ W8 (8-bit):  [00001011 = A]</pre>
           if (enc.level !== curL) {
             bits.push((1).toString(2).padStart(curW, "0"));
             readLines.push(`${curW}w1(0=LvlTrig)`);
-            const lSeq = buildControlSequence(enc.level - 1, curW);
-            pushCtrl(lSeq, `Lvl=${11 + (enc.level - 1)}->L${enc.level}`);
+            const lSeq = buildControlSequence(enc.level, curW);
+            pushCtrl(lSeq, `Lvl=${11 + enc.level}->L${enc.level}`);
             curL = enc.level;
           }
 
