@@ -1451,6 +1451,66 @@ W8 (8-bit):  [00001011 = A]</pre>
       };
     }
 
+    function estimateScsuLikeBits(text) {
+      // Approximate SCSU-style dynamic window + literal/UTF-16 fallback byte size
+      const units = Array.from(text);
+      if (!units.length) return 0;
+      let bytes = 1; // initial window byte
+      let activeBase = 0x0000;
+      for (const u of units) {
+        const cp = u.codePointAt(0);
+        if (cp <= 0x7f) {
+          bytes += 1;
+        } else if (cp >= activeBase && cp < activeBase + 128) {
+          bytes += 1;
+        } else {
+          // Shift window (2 bytes) + 1 byte offset (or 2 bytes for supplementary)
+          activeBase = cp & ~0x7f;
+          bytes += (cp > 0xffff ? 4 : 3);
+        }
+      }
+      return bytes * 8;
+    }
+
+    function estimateDeflateBits(text) {
+      if (!text) return 0;
+      try {
+        if (typeof require === "function") {
+          const zlib = require("zlib");
+          return zlib.deflateRawSync(Buffer.from(text, "utf8")).length * 8;
+        }
+      } catch (_) {}
+      // Fallback: UTF-8 bits if zlib isn't directly imported in browser sandbox
+      return new TextEncoder().encode(text).length * 8;
+    }
+
+    function compareAllEncodings(text) {
+      const str = String(text || "");
+      const utf8Bits = new TextEncoder().encode(str).length * 8;
+      const utf16Bits = Array.from(str).reduce((sum, ch) => sum + (ch.codePointAt(0) > 0xffff ? 32 : 16), 0);
+      const scsuApproxBits = estimateScsuLikeBits(str);
+      const deflateBits = estimateDeflateBits(str);
+
+      const norm = typeof computeDwleStream === "function" ? computeDwleStream(str) : { totalBits: utf8Bits, bits: [] };
+      const smart = typeof computeSmartJumpStream === "function" ? computeSmartJumpStream(str) : norm;
+
+      const normDecoded = typeof decodeDwleBits === "function" ? decodeDwleBits((norm.bits || []).join("")) : str;
+      const smartDecoded = typeof decodeDwleBits === "function" ? decodeDwleBits((smart.bits || []).join("")) : str;
+
+      return {
+        text: str,
+        utf8Bits,
+        utf16Bits,
+        scsuApproxBits,
+        deflateBits,
+        normalDwleBits: norm.totalBits,
+        normalLossless: normDecoded === str,
+        smartJumpBits: smart.totalBits,
+        smartLabel: (smart.smartMeta && smart.smartMeta.chosenLabel) || "Smart Jump",
+        smartLossless: smartDecoded === str
+      };
+    }
+
     function renderBinaryComposer(streamObj) {
       if (!streamObj) return;
       const bitStr = Array.isArray(streamObj.bits) ? streamObj.bits.join("") : String(streamObj.bits || "");
