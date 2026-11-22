@@ -1398,15 +1398,32 @@ W8 (8-bit):  [00001011 = A]</pre>
         { label: "W10 Only", res: runComboStream(new Set([10]), 10) },
         { label: "W8 Only", res: runComboStream(new Set([8]), 8) },
         { label: "W9 Only", res: runComboStream(new Set([9]), 9) },
+        { label: "W13 Only", res: runComboStream(new Set([13]), 13) },
+        { label: "W17 Only", res: runComboStream(new Set([17]), 17) },
         { label: "W8+10", res: runComboStream(new Set([8, 10]), 10) },
         { label: "W9+10", res: runComboStream(new Set([9, 10]), 10) },
         { label: "W8+9", res: runComboStream(new Set([8, 9]), 9) },
         { label: "W8+9+10", res: runComboStream(new Set([8, 9, 10]), 10) },
+        { label: "W8+13", res: runComboStream(new Set([8, 13]), 8) },
+        { label: "W8+17", res: runComboStream(new Set([8, 17]), 8) },
         { label: "Default Stream", res: base }
       ];
 
-      let best = combos[0];
-      for (const c of combos) {
+      function isLosslessCandidate(c) {
+        if (!c || !c.res || !Array.isArray(c.res.bits)) return false;
+        if (typeof decodeDwleBits !== "function") return true;
+        try {
+          return decodeDwleBits(c.res.bits.join("")) === text;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      const validCombos = combos.filter(isLosslessCandidate);
+      const pool = validCombos.length ? validCombos : [{ label: "Default Stream", res: base }];
+
+      let best = pool.find(c => c.label === "Default Stream") || pool[0];
+      for (const c of pool) {
         if (c.res && typeof c.res.totalBits === "number" && c.res.totalBits < best.res.totalBits) {
           best = c;
         }
