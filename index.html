@@ -563,7 +563,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       const rem = chars.length - pos;
       if (rem < 6) return null;
       let best = null;
-      const maxBase = Math.min(48, Math.floor(rem * 0.75));
+      const maxBase = Math.min(512, rem);
       for (let len = 3; len <= maxBase; len++) {
         const base = chars.slice(pos, pos + len);
         let copies = [base.slice()], cursor = pos + len, edits = [], prefixLen = len;
