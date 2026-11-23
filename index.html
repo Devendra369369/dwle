@@ -1304,22 +1304,56 @@ W8 (8-bit):  [00001011 = A]</pre>
       }
     }
 
-    function renderCompareCard(text, dwleBits) {
-      const wrap = document.getElementById("compareTableWrap");
-      if (!wrap) return;
-      const s = calcBenchmarkStats(text, dwleBits);
+    function calcFreshStats(text, dwleBits) {
+      const str = String(text || "");
+      const u8Bytes = typeof TextEncoder !== "undefined"
+        ? new TextEncoder().encode(str).length
+        : (typeof Buffer !== "undefined" ? Buffer.byteLength(str, "utf8") : str.length);
+      const u8 = u8Bytes * 8;
+      const chars = [...str].length;
+      const u16 = chars * 16;
+      const u32 = chars * 32;
+
+      const freq = new Map();
+      for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+      let entropyBits = 0;
+      const totalChars = [...freq.values()].reduce((a, b) => a + b, 0);
+      if (totalChars > 0) {
+        for (const cnt of freq.values()) {
+          const p = cnt / totalChars;
+          entropyBits += cnt * Math.max(1, -Math.log2(p));
+        }
+      }
+      const huffTot = str.length ? Math.max(8, Math.ceil(entropyBits) + freq.size * 6) : 0;
+      const defEst = str.length ? Math.max(8, Math.round(huffTot * 0.85 + 24)) : 0;
+      const zstdEst = str.length ? Math.max(8, Math.round(defEst * 0.92)) : 0;
+
       let smartBits = dwleBits;
       try {
-        if (typeof computeSmartDwleStream === "function" && text) {
-          smartBits = computeSmartDwleStream(text).totalBits;
+        if (typeof computeSmartDwleStream === "function" && str.length > 0) {
+          smartBits = computeSmartDwleStream(str).totalBits;
         }
       } catch (_) {}
-      const bestMine = Math.min(dwleBits, smartBits);
-      const pct = s.u8 > 0 ? (((s.u8 - bestMine) / s.u8) * 100).toFixed(1) : "0.0";
-      wrap.innerHTML = `<table border="1" cellpadding="6" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left;">
-        <tr><th>UTF-8</th><th>UTF-16</th><th>UTF-32</th><th>Huffman(~)</th><th>DEFLATE(~)</th><th>DWLE</th><th>DWLE-Smart</th><th>Saved vs UTF-8</th></tr>
-        <tr><td>${s.u8}b</td><td>${s.u16}b</td><td>${s.u32}b</td><td>${s.huffTot}b</td><td>${s.defEst}b</td><td><b>${dwleBits}b</b></td><td><b>${smartBits}b</b></td><td><b>${pct}%</b></td></tr>
-      </table>`;
+
+      const bestMine = Math.min(dwleBits || 0, smartBits || 0);
+      const pct = u8 > 0 ? (((u8 - bestMine) / u8) * 100).toFixed(1) : "0.0";
+      return { u8, u16, u32, huffTot, defEst, zstdEst, smartBits, pct };
+    }
+
+    function renderCompareCard(text, dwleBits) {
+      const t = (typeof text === "string") ? text : (document.getElementById("sampleText")?.value || "");
+      let dBits = (typeof dwleBits === "number" && !Number.isNaN(dwleBits)) ? dwleBits : 0;
+      if (!dBits && t && typeof computeDwleStream === "function") {
+        try { dBits = computeDwleStream(t).totalBits; } catch (_) {}
+      }
+      const m = calcFreshStats(t, dBits);
+      const htmlTable = `<div style="overflow-x:auto;"><table border="1" cellpadding="6" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left;">
+        <tr><th>UTF-8</th><th>UTF-16</th><th>UTF-32</th><th>Huffman(~)</th><th>DEFLATE(~)</th><th>Zstd(~)</th><th>DWLE</th><th>DWLE-Smart</th><th>Saved vs UTF-8</th></tr>
+        <tr><td>${m.u8}b</td><td>${m.u16}b</td><td>${m.u32}b</td><td>${m.huffTot}b</td><td>${m.defEst}b</td><td>${m.zstdEst}b</td><td><b>${dBits}b</b></td><td><b>${m.smartBits}b</b></td><td><b>${m.pct}%</b></td></tr>
+      </table></div>`;
+
+      const wrap = document.getElementById("compareTableWrap");
+      if (wrap) wrap.innerHTML = htmlTable;
     }
 
     function estimateBits() {
