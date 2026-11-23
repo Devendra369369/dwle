@@ -1200,6 +1200,22 @@ W8 (8-bit):  [00001011 = A]</pre>
       return candidates[0];
     }
 
+    function showAllMethodsComparison() {
+      const ta = document.getElementById("sampleText");
+      const txt = ta ? ta.value : "";
+      let dwBits = 0;
+      try {
+        if (typeof computeDwleStream === "function") {
+          dwBits = computeDwleStream(txt).totalBits;
+        }
+      } catch (_) {}
+      renderCompareCard(txt, dwBits);
+      const card = document.getElementById("compareCard");
+      if (card && typeof card.scrollIntoView === "function") {
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+
     function renderCompareCard(text, dwleBits) {
       const wrap = document.getElementById("compareTableWrap");
       if (!wrap) return;
@@ -1817,6 +1833,15 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
   });
 })();
+
+    window.addEventListener("DOMContentLoaded", function () {
+      try {
+        const ta = document.getElementById("sampleText");
+        if (ta && ta.value && typeof showAllMethodsComparison === "function") {
+          showAllMethodsComparison();
+        }
+      } catch (_) {}
+    });
 </script>
 
 </body>
