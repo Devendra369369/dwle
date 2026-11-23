@@ -626,6 +626,24 @@ W8 (8-bit):  [00001011 = A]</pre>
       return best;
     }
 
+
+    // Level Jump Rules (non-nested):
+    // 1) [11 + (12..255)]
+    // 2) [11 + (1..10) + (11..255)]
+    // Master code [0 + (12..255)] and [0 + (1..10) + (11..255)] is reserved and untouched.
+    function emitLevelJumpTokens(emitToken, curW, levelVal, targetSlot) {
+      if (typeof levelVal === "number" && levelVal >= 1 && levelVal <= 10) {
+        emitToken(11, curW, `${curW}w11(LvlJump)`, "11:LvlJump");
+        emitToken(levelVal, curW, `${curW}w${levelVal}(Lvl:${levelVal})`, `L${levelVal}`);
+        const clampedSlot = Math.max(11, Math.min(255, Number(targetSlot) || 11));
+        emitToken(clampedSlot, curW, `${curW}w${clampedSlot}(Slot:${clampedSlot})`, `S${clampedSlot}`);
+        return;
+      }
+      emitToken(11, curW, `${curW}w11(LvlJump)`, "11:LvlJump");
+      const clampedDirect = Math.max(12, Math.min(255, Number(targetSlot) || 12));
+      emitToken(clampedDirect, curW, `${curW}w${clampedDirect}(Slot:${clampedDirect})`, `S${clampedDirect}`);
+    }
+
     function computeDwleStream(text) {
       const chars = tokenizeDwleUnits(text);
       let curW = 8, curL = 1, curN = 1;
