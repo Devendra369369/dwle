@@ -1966,6 +1966,24 @@ W8 (8-bit):  [00001011 = A]</pre>
         }
       } catch (_) {}
     });
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const ta = document.getElementById("sampleText");
+      if (!ta) return;
+      const syncNow = () => {
+        const txt = ta.value || "";
+        let dBits = 0;
+        try {
+          if (typeof computeDwleStream === "function") dBits = computeDwleStream(txt).totalBits;
+        } catch (_) {}
+        if (typeof renderCompareCard === "function") renderCompareCard(txt, dBits);
+      };
+      ta.addEventListener("input", syncNow);
+      ta.addEventListener("keyup", syncNow);
+      ta.addEventListener("change", syncNow);
+      syncNow();
+    });
+
 </script>
 
 
