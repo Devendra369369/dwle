@@ -1221,6 +1221,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       const rows = [
         { name: "DWLE-Smart (Your Method)", tier: "Top #1 (Mine)", bits: smartBits || dwleBits },
         { name: "DWLE Pure (Your Method)", tier: "Top #2 (Mine)", bits: dwleBits },
+        { name: "Indie Bit-Packer (Unlisted / Small)", tier: "Small / Indie", bits: Math.max(8, Math.round((s.u8 || 8) * 0.72)) },
         { name: "Micro / Custom Indie (Small/New)", tier: "Small / Indie", bits: microCustomEst },
         { name: "Context / Window Token (~)", tier: "New / Token", bits: ctxTokenEst },
         { name: "BWT + MTF (~)", tier: "Block / Classic-New", bits: bwtEst },
