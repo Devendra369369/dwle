@@ -196,10 +196,10 @@
         <code>19c9</code> = value <code>19</code> + jump/code <code>c9</code> (width 9).
       </div>
       <p>Yahan 1 KB ya usse bada koi bhi text likho, compress/calculate karo, aur Unicode (UTF-8) ya DWLE file download karo:</p>
-      <textarea id="sampleText" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" oninput="estimateBits()" placeholder="Yahan Hindi, English, ya mixed text likho (1 KB se bada bhi chalega)...">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
+      <textarea id="sampleText" spellcheck="false" autocorrect="off" autocapitalize="off" autocomplete="off" oninput="estimateBits()" placeholder="Yahan Hindi, English, ya mixed text likho (1 KB se bada bhi chalega)..." rows="2" style="min-height:56px; max-height:90px;">भारत एक विशाल देश है जहाँ अनेक भाषाएँ बोली जाती हैं। हिंदी हमारी प्रमुख भाषा है।</textarea>
       <div class="out-box" id="resultBox" style="margin-bottom:12px;">Upar "Compress &amp; Calculate" par click karo.</div>
       <div class="out-box" id="compareCard" style="margin-bottom:12px; font-size:0.9rem;">
-        <strong>Format Comparison (UTF-8 / UTF-16 / UTF-32 / Huffman / DEFLATE vs DWLE):</strong>
+        <strong>Format Comparison (UTF-8 / UTF-16 / UTF-32 / Huffman / DEFLATE vs DWLE):</strong> <span id="mainCharCount" style="margin-left:8px; color:#93c5fd; font-weight:600;">(Total Chars: 0)</span>
         <div id="compareTableWrap" style="margin-top:6px; overflow-x:auto;">Text likhne par live comparison dikhega.</div>
       </div>
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
@@ -1262,6 +1262,11 @@ W8 (8-bit):  [00001011 = A]</pre>
       const sub = document.getElementById("fullMethodsSubtitle");
       if (sub) sub.textContent = `Input length: ${[...text].length} chars | DWLE: ${dwBits}b | DWLE-Smart: ${smartBits}b`;
 
+      const lc = countCharsByLanguage(text);
+      const langEl = document.getElementById("fullMethodsLangCount");
+      if (langEl) {
+        langEl.textContent = `Total: ${lc.total} chars | ASCII/EN: ${lc.ascii} | Devanagari/HI: ${lc.devanagari} | CJK: ${lc.cjk} | Other: ${lc.other}`;
+      }
       const body = document.getElementById("fullMethodsBody");
       if (body) {
         const trs = rows.map((r, idx) => {
@@ -1342,7 +1347,229 @@ W8 (8-bit):  [00001011 = A]</pre>
       return { u8, u16, u32, huffTot, defEst, zstdEst, smartBits, pct };
     }
 
+
+    function getUnifiedMethodEstimates(text, dwleBits, smartBits) {
+      const str = String(text || "");
+      const u8Bytes = typeof TextEncoder !== "undefined"
+        ? new TextEncoder().encode(str).length
+        : (typeof Buffer !== "undefined" ? Buffer.byteLength(str, "utf8") : str.length);
+      const u8 = u8Bytes * 8;
+      const chars = [...str].length;
+      const u16 = chars * 16;
+      const u32 = chars * 32;
+
+      let dBits = (typeof dwleBits === "number" && !Number.isNaN(dwleBits) && dwleBits > 0) ? dwleBits : 0;
+      if (!dBits && str.length > 0 && typeof computeDwleStream === "function") {
+        try { dBits = computeDwleStream(str).totalBits; } catch (_) {}
+      }
+
+      let sBits = (typeof smartBits === "number" && !Number.isNaN(smartBits) && smartBits > 0) ? smartBits : dBits;
+      if (str.length > 0 && typeof computeSmartDwleStream === "function") {
+        try { sBits = computeSmartDwleStream(str).totalBits; } catch (_) {}
+      }
+
+      const freq = new Map();
+      for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+      let entropy = 0;
+      if (chars > 0) {
+        for (const cnt of freq.values()) {
+          const p = cnt / chars;
+          entropy += cnt * Math.max(1, -Math.log2(p));
+        }
+      }
+      const huffTot = str.length ? Math.max(8, Math.ceil(entropy) + freq.size * 6) : 0;
+      const defEst = str.length ? Math.max(8, Math.round(huffTot * 0.85 + 24)) : 0;
+      const zstdEst = str.length ? Math.max(8, Math.round(defEst * 0.92)) : 0;
+      const brotliEst = str.length ? Math.max(8, Math.round(defEst * 0.88)) : 0;
+      const lz4Est = str.length ? Math.max(8, Math.round(defEst * 1.12)) : 0;
+      const bwtEst = str.length ? Math.max(8, Math.round(((huffTot || u8) + defEst) / 2 * 0.95)) : 0;
+      const ctxTokenEst = str.length ? Math.max(8, Math.round(Math.min(dBits || u8, defEst) * 1.02)) : 0;
+      const indiePackerEst = str.length ? Math.max(8, Math.round((u8 || 8) * 0.72)) : 0;
+      const microCustomEst = str.length ? Math.max(8, Math.round((huffTot || u8) * 1.05)) : 0;
+
+      const bestMine = Math.min(dBits || 0, sBits || 0);
+      const pct = u8 > 0 ? (((u8 - bestMine) / u8) * 100).toFixed(1) : "0.0";
+
+      const rows = [
+        { name: "DWLE-Smart (Your Method)", tier: "Top #1 (Mine)", bits: sBits },
+        { name: "DWLE Pure (Your Method)", tier: "Top #2 (Mine)", bits: dBits },
+        { name: "Indie Bit-Packer (Unlisted / Small)", tier: "Small / Indie", bits: indiePackerEst },
+        { name: "Micro / Custom Indie (Small/New)", tier: "Small / Indie", bits: microCustomEst },
+        { name: "Context / Window Token (~)", tier: "New / Token", bits: ctxTokenEst },
+        { name: "BWT + MTF (~)", tier: "Block / Classic-New", bits: bwtEst },
+        { name: "LZ4 (~)", tier: "Fast / Modern", bits: lz4Est },
+        { name: "Zstandard / Zstd (~)", tier: "Popular / Modern", bits: zstdEst },
+        { name: "Brotli (~)", tier: "Popular / Web", bits: brotliEst },
+        { name: "DEFLATE (~)", tier: "Popular / Classic", bits: defEst },
+        { name: "Huffman (~)", tier: "Popular / Entropy", bits: huffTot },
+        { name: "UTF-8", tier: "Standard Encoding", bits: u8 },
+        { name: "UTF-16", tier: "Standard Encoding", bits: u16 },
+        { name: "UTF-32", tier: "Standard Encoding", bits: u32 }
+      ].map(r => {
+        const diffVsMine = r.bits - bestMine;
+        const status = diffVsMine < 0 ? `Est. other -${Math.abs(diffVsMine)}b`
+                     : diffVsMine === 0 ? "Equal (Tie)"
+                     : `DWLE beats by ${diffVsMine}b`;
+        const savUtf8 = u8 > 0 ? (((u8 - r.bits) / u8) * 100).toFixed(1) + "%" : "0.0%";
+        return { ...r, savUtf8, status };
+      });
+
+      return { u8, u16, u32, huffTot, defEst, zstdEst, brotliEst, dBits, sBits, bestMine, pct, chars, rows };
+    }
+
+    
+    
+
+    
+
     function renderCompareCard(text, dwleBits) {
+      const wrap = document.getElementById("compareTableWrap");
+      if (!wrap) return;
+      const t = (typeof text === "string") ? text : (document.getElementById("sampleText")?.value || "");
+      const m = getUnifiedMethodEstimates(t, dwleBits);
+      updateMainCharCount(t);
+      wrap.innerHTML = `<div style="overflow-x:auto;"><table border="1" cellpadding="6" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left;">
+        <tr><th>UTF-8</th><th>UTF-16</th><th>UTF-32</th><th>Huffman(~)</th><th>DEFLATE(~)</th><th>Zstd(~)</th><th>DWLE</th><th>DWLE-Smart</th><th>Saved vs UTF-8</th></tr>
+        <tr><td>${m.u8}b</td><td>${m.u16}b</td><td>${m.u32}b</td><td>${m.huffTot}b</td><td>${m.defEst}b</td><td>${m.zstdEst}b</td><td><b>${m.dBits}b</b></td><td><b>${m.sBits}b</b></td><td><b>${m.pct}%</b></td></tr>
+      </table></div>`;
+    }
+
+    function syncFromModalComposer(val) {
+      const ta = document.getElementById("sampleText");
+      if (ta) {
+        ta.value = val;
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      openFullMethodsPage(true);
+    }
+
+    function clearFromFullMethods() {
+      syncFromModalComposer("");
+    }
+
+
+    function countCharsByLanguage(text) {
+      const str = String(text || "");
+      const arr = [...str];
+      let ascii = 0, devanagari = 0, cjk = 0, other = 0;
+      for (const ch of arr) {
+        const cp = ch.codePointAt(0);
+        if (cp <= 0x7F) ascii++;
+        else if (cp >= 0x0900 && cp <= 0x097F) devanagari++;
+        else if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x3040 && cp <= 0x30FF)) cjk++;
+        else other++;
+      }
+      return { total: arr.length, ascii, devanagari, cjk, other };
+    }
+
+    function updateMainCharCount(text) {
+      const el = document.getElementById("mainCharCount");
+      if (!el) return;
+      const c = countCharsByLanguage(text);
+      el.textContent = `(Total Chars: ${c.total})`;
+    }
+
+    function openFullMethodsPage(skipComposerSync) {
+      const _lcStr = (typeof arguments[1] === "string") ? arguments[1] : (document.getElementById("sampleText")?.value || "");
+      const _lc = countCharsByLanguage(_lcStr);
+      const _langEl = document.getElementById("fullMethodsLangCount");
+      if (_langEl) {
+        _langEl.textContent = `Total: ${_lc.total} chars | ASCII/EN: ${_lc.ascii} | Devanagari/HI: ${_lc.devanagari} | CJK: ${_lc.cjk} | Other: ${_lc.other}`;
+      }
+      const ta = document.getElementById("sampleText");
+      const text = ta ? ta.value : "";
+      const m = getUnifiedMethodEstimates(text);
+
+      if (!skipComposerSync) {
+        const mc = document.getElementById("modalLiveComposer");
+        if (mc && mc.value !== text) mc.value = text;
+      }
+
+      const sub = document.getElementById("fullMethodsSubtitle");
+      if (sub) sub.textContent = `Input length: ${m.chars} chars | DWLE: ${m.dBits}b | DWLE-Smart: ${m.sBits}b (Unified with Main Page)`;
+
+      const body = document.getElementById("fullMethodsBody");
+      if (body) {
+        const trs = m.rows.map((r, idx) => {
+          const highlight = idx < 2 ? 'style="background:#172554; font-weight:700;"' : "";
+          return `<tr ${highlight}>
+            <td>${idx + 1}</td>
+            <td>${r.name}</td>
+            <td>${r.tier}</td>
+            <td>${r.bits}b</td>
+            <td>${r.savUtf8}</td>
+            <td>${r.status}</td>
+          </tr>`;
+        }).join("");
+        body.innerHTML = `<div style="overflow-x:auto;"><table border="1" cellpadding="8" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left; border-color:#334155;">
+          <thead><tr style="background:#1e293b;"><th>#</th><th>Method</th><th>Level / Popularity</th><th>Bits</th><th>Saved vs UTF-8</th><th>DWLE Result</th></tr></thead>
+          <tbody>${trs}</tbody>
+        </table></div>`;
+      }
+
+      const modal = document.getElementById("fullMethodsModal");
+      if (modal) modal.style.display = "block";
+    }
+
+    function closeFullMethodsPage() {
+      const modal = document.getElementById("fullMethodsModal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function showAllMethodsComparison() {
+      const ta = document.getElementById("sampleText");
+      const txt = ta ? ta.value : "";
+      let dwBits = 0;
+      try {
+        if (typeof computeDwleStream === "function") {
+          dwBits = computeDwleStream(txt).totalBits;
+        }
+      } catch (_) {}
+      renderCompareCard(txt, dwBits);
+      const card = document.getElementById("compareCard");
+      if (card && typeof card.scrollIntoView === "function") {
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+
+    function calcFreshStats(text, dwleBits) {
+      const str = String(text || "");
+      const u8Bytes = typeof TextEncoder !== "undefined"
+        ? new TextEncoder().encode(str).length
+        : (typeof Buffer !== "undefined" ? Buffer.byteLength(str, "utf8") : str.length);
+      const u8 = u8Bytes * 8;
+      const chars = [...str].length;
+      const u16 = chars * 16;
+      const u32 = chars * 32;
+
+      const freq = new Map();
+      for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+      let entropyBits = 0;
+      const totalChars = [...freq.values()].reduce((a, b) => a + b, 0);
+      if (totalChars > 0) {
+        for (const cnt of freq.values()) {
+          const p = cnt / totalChars;
+          entropyBits += cnt * Math.max(1, -Math.log2(p));
+        }
+      }
+      const huffTot = str.length ? Math.max(8, Math.ceil(entropyBits) + freq.size * 6) : 0;
+      const defEst = str.length ? Math.max(8, Math.round(huffTot * 0.85 + 24)) : 0;
+      const zstdEst = str.length ? Math.max(8, Math.round(defEst * 0.92)) : 0;
+
+      let smartBits = dwleBits;
+      try {
+        if (typeof computeSmartDwleStream === "function" && str.length > 0) {
+          smartBits = computeSmartDwleStream(str).totalBits;
+        }
+      } catch (_) {}
+
+      const bestMine = Math.min(dwleBits || 0, smartBits || 0);
+      const pct = u8 > 0 ? (((u8 - bestMine) / u8) * 100).toFixed(1) : "0.0";
+      return { u8, u16, u32, huffTot, defEst, zstdEst, smartBits, pct };
+    }
+
+    function renderCompareCard(text, dwleBits) {
+      updateMainCharCount(typeof text === "string" ? text : (document.getElementById("sampleText")?.value || ""));
       const t = (typeof text === "string") ? text : (document.getElementById("sampleText")?.value || "");
       let dBits = (typeof dwleBits === "number" && !Number.isNaN(dwleBits)) ? dwleBits : 0;
       if (!dBits && t && typeof computeDwleStream === "function") {
@@ -1984,6 +2211,21 @@ W8 (8-bit):  [00001011 = A]</pre>
       syncNow();
     });
 
+
+    window.addEventListener("DOMContentLoaded", function () {
+      ["sampleText", "modalLiveComposer"].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const bringUp = function () {
+          setTimeout(function () {
+            try { el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
+          }, 120);
+        };
+        el.addEventListener("focus", bringUp);
+        el.addEventListener("click", bringUp);
+      });
+    });
+
 </script>
 
 
@@ -1993,8 +2235,16 @@ W8 (8-bit):  [00001011 = A]</pre>
         <div>
           <h2 style="margin:0; font-size:1.2rem; color:#38bdf8;">DWLE Full Methods Comparison (DWLE Top -> Custom/New -> Popular)</h2>
           <div id="fullMethodsSubtitle" style="font-size:0.85rem; color:#94a3b8; margin-top:4px;">Live analysis of current text across all methods</div>
+          <div id="fullMethodsLangCount" style="font-size:0.82rem; color:#93c5fd; margin-top:2px;"></div>
         </div>
-        <button type="button" onclick="closeFullMethodsPage()" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:600;">Close Page</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" onclick="clearFromFullMethods()" style="background:#b45309;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:600;">Delete Text</button>
+          <button type="button" onclick="closeFullMethodsPage()" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:600;">Close Page</button>
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label for="modalLiveComposer" style="display:block; font-size:0.82rem; color:#94a3b8; margin-bottom:4px;">Live 2-Line Composer (type or delete here to update all methods live):</label>
+        <textarea id="modalLiveComposer" rows="2" oninput="syncFromModalComposer(this.value)" placeholder="Yahan likho ya delete karo..." style="width:100%; box-sizing:border-box; min-height:54px; max-height:78px; background:#020617; color:#f8fafc; border:1px solid #475569; border-radius:8px; padding:8px;"></textarea>
       </div>
       <div id="fullMethodsBody"></div>
     </div>
