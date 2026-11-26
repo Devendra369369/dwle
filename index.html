@@ -2281,7 +2281,7 @@ const sampleEl = document.getElementById("sampleText");
 
 
 <script>
-// DWLE v2026.11 Smart Default (Token 15) + 5-bit Window + Mode A/B Tokeniser (null = exit) + Strict Profit Guard
+// DWLE v2026.11 Smart Default (Token 15) + W8 Default Word Tokeniser + Mode A/B (null = exit) + Strict Profit Guard
 (function () {
   const DWLE_TOKEN_15 = 15;
   const DWLE_MAX_5BIT_WIN = 31;
@@ -2310,7 +2310,6 @@ const sampleEl = document.getElementById("sampleText");
   function encodeModeABSlot(val, modeB = false, slotWidth = 4) {
     const modeBit = modeB ? "1" : "0";
     const n = Number(val) || 0;
-    // Map into 1..15 range: 1..10 direct, >10 mapped into 11..15
     const mapped = n <= 10 ? Math.max(1, n) : (11 + ((n - 11) % 5));
     const slotBits = mapped.toString(2).padStart(slotWidth, "0");
     return "0" + modeBit + slotBits;
@@ -2324,24 +2323,34 @@ const sampleEl = document.getElementById("sampleText");
       const useModeB = i === 0 ? Boolean(modeB) : !Boolean(modeB);
       stream += encodeModeABSlot(ids[i], useModeB, slotWidth);
     }
-    // null strictly exits the tokenised block
     return stream + DWLE_NULL_EXIT;
   }
 
-  // 3x repeat word tokeniser using Mode A/B + null-exit framing and strict profit guard
-  function encodeWordTokens3x(text, charBits = 8, slotWidth = 4) {
+  function utf8BitLen(str) {
+    if (typeof TextEncoder !== "undefined") {
+      return new TextEncoder().encode(String(str || "")).length * 8;
+    }
+    return Buffer.byteLength(String(str || ""), "utf8") * 8;
+  }
+
+  // 3x repeat word tokeniser supporting Hindi/Unicode & ASCII words,
+  // trying W8 (8-bit default) word encoding + Mode A/B + null-exit with strict profit guard.
+  function encodeWordTokens3x(text, defaultWinBits = 8, slotWidth = 4) {
     const str = String(text || "");
-    const words = str.match(/[A-Za-z0-9_]+/g) || [];
+    const wordRegex = /[\p{L}\p{N}_]+/gu;
+    const words = str.match(wordRegex) || [];
     const freq = new Map();
     for (const w of words) freq.set(w, (freq.get(w) || 0) + 1);
 
     const candidates = [...freq.entries()]
-      .filter(([w, c]) => c >= 3 && w.length >= 2)
-      .sort((a, b) => b[0].length - a[0].length);
+      .filter(([w, c]) => c >= 3 && Array.from(w).length >= 2)
+      .sort((a, b) => Array.from(b[0]).length - Array.from(a[0]).length);
 
     let working = str;
     const tokens = [];
     let tokenId = 1;
+
+    const w8DefCharBits = 8;
 
     for (const [word] of candidates) {
       let actualCount = 0;
@@ -2352,16 +2361,25 @@ const sampleEl = document.getElementById("sampleText");
       }
       if (actualCount < 3) continue;
 
-      const rawWordBits = word.length * charBits;
-      const rawTotalBits = actualCount * rawWordBits;
+      const charCount = Array.from(word).length;
+      const rawUtf8WordBits = utf8BitLen(word);
+      const rawTotalBits = actualCount * rawUtf8WordBits;
 
-      // Token definition + Mode A/B token refs + null exit
       const modeB = tokenId % 2 === 0;
-      const defBits = 2 + rawWordBits + DWLE_NULL_EXIT.length;
       const singleRefBits = encodeModeABSlot(tokenId, modeB, slotWidth).length;
-      const tokenisedTotalBits = defBits + actualCount * singleRefBits + DWLE_NULL_EXIT.length;
 
-      if (tokenisedTotalBits < rawTotalBits) {
+      // Option 1: W8 default window word token definition + Mode A/B refs + null exit
+      const w8DefBits = 2 + (charCount * w8DefCharBits) + DWLE_NULL_EXIT.length;
+      const w8TotalCost = w8DefBits + (actualCount * singleRefBits) + DWLE_NULL_EXIT.length;
+
+      // Option 2: Native/UTF-8 word definition + Mode A/B refs + null exit
+      const nativeDefBits = 2 + rawUtf8WordBits + DWLE_NULL_EXIT.length;
+      const nativeTotalCost = nativeDefBits + (actualCount * singleRefBits) + DWLE_NULL_EXIT.length;
+
+      const bestCost = Math.min(w8TotalCost, nativeTotalCost);
+      const usedW8Default = w8TotalCost <= nativeTotalCost;
+
+      if (bestCost < rawTotalBits) {
         const marker = `[[T${tokenId}]]`;
         working = working.split(word).join(marker);
         tokens.push({
@@ -2369,9 +2387,10 @@ const sampleEl = document.getElementById("sampleText");
           word,
           count: actualCount,
           mode: modeB ? "B" : "A",
+          windowMode: usedW8Default ? "W8-default" : "native-default",
           rawTotalBits,
-          tokenisedTotalBits,
-          savedBits: rawTotalBits - tokenisedTotalBits,
+          tokenisedTotalBits: bestCost,
+          savedBits: rawTotalBits - bestCost,
           blockBits: buildModeABTokenBlock(Array(actualCount).fill(tokenId), modeB, slotWidth)
         });
         tokenId++;
@@ -2382,22 +2401,29 @@ const sampleEl = document.getElementById("sampleText");
     for (const t of tokens) {
       baseText = baseText.split(`[[T${t.id}]]`).join("");
     }
-    const nonTokenChars = Array.from(baseText).length * charBits;
+
+    const nonTokenBits = utf8BitLen(baseText);
     const tokensCost = tokens.reduce((acc, t) => acc + t.tokenisedTotalBits, 0);
-    const totalEncodedBits = nonTokenChars + tokensCost;
-    const rawBits = Array.from(str).length * charBits;
+    const totalEncodedBits = nonTokenBits + tokensCost;
+    const rawBits = utf8BitLen(str);
+    const netSavedBits = Math.max(0, rawBits - totalEncodedBits);
+
+    const smartDefaultFrame = netSavedBits > 0
+      ? buildSmartDefault15Frame(8, tokens.map(t => t.blockBits).join(""), true)
+      : "";
 
     return {
       text: str,
+      defaultWindow: "W8",
       rawBits,
-      totalEncodedBits,
-      netSavedBits: rawBits - totalEncodedBits,
+      totalEncodedBits: netSavedBits > 0 ? totalEncodedBits : rawBits,
+      netSavedBits,
+      smartDefaultFrameBits: smartDefaultFrame.length,
       tokens,
       tokenizedPreview: working
     };
   }
 
-  // Strict profit guard: returns compressed only when net bit savings > 0
   function applyStrictProfitGuard(rawBitsLen, candidateBitsStr) {
     const cand = String(candidateBitsStr || "");
     if (!cand || cand.length >= rawBitsLen) {
