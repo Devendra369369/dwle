@@ -2129,7 +2129,18 @@ W8 (8-bit):  [00001011 = A]</pre>
       try {
         const textEl = document.getElementById("textInput") || [...document.querySelectorAll("textarea")].find(t => t.id !== "binaryInput");
         const binEl = document.getElementById("binaryInput");
-        const txt = textEl ? textEl.value : "";
+const sampleEl = document.getElementById("sampleText");
+        const txt = (sampleEl && sampleEl.value) || (textEl ? textEl.value : "");
+        if (window.DWLESmartV2 && typeof window.DWLESmartV2.encodeWordTokens3x === "function") {
+          const tokRes = window.DWLESmartV2.encodeWordTokens3x(txt, 8);
+          window.__lastDwle3xResult = tokRes;
+          if (binEl && tokRes.tokens && tokRes.tokens.length > 0 && tokRes.netSavedBits > 0) {
+            const note = `\n/* 3x Tokenised (${tokRes.tokens.map(t => t.word + "x" + t.count).join(", ")}): ${tokRes.rawBits} -> ${tokRes.totalEncodedBits} bits (-${tokRes.netSavedBits}b) | exit=null */`;
+            if (!String(binEl.value || "").includes("3x Tokenised")) {
+              binEl.value = String(binEl.value || "") + note;
+            }
+          }
+        }
         if (txt && typeof window.computeSmartJumpStream === "function") {
           const sRes = window.computeSmartJumpStream(txt);
           const nRes = typeof window.computeDwleStream === "function" ? window.computeDwleStream(txt) : null;
