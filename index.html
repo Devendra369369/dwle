@@ -2270,11 +2270,12 @@ W8 (8-bit):  [00001011 = A]</pre>
 
 
 <script>
-// DWLE v2026.11 Smart Default (Token 15) + 5-bit Window + Strict Profit Guard
+// DWLE v2026.11 Smart Default (Token 15) + 5-bit Window + Mode A/B Tokeniser (null = exit) + Strict Profit Guard
 (function () {
   const DWLE_TOKEN_15 = 15;
   const DWLE_MAX_5BIT_WIN = 31;
   const DWLE_CLOSE_11_0010 = "000010110010"; // Slot 11 (8-bit) + 0010 close marker
+  const DWLE_NULL_EXIT = "00000000";       // null acts strictly as exit marker inside tokenised stream
 
   function encode5BitWindow(winNum) {
     const clamped = Math.max(0, Math.min(DWLE_MAX_5BIT_WIN, Number(winNum) || 0));
@@ -2292,6 +2293,97 @@ W8 (8-bit):  [00001011 = A]</pre>
     const win5Bits = encode5BitWindow(winNum);
     const closeBits = closeDefault ? DWLE_CLOSE_11_0010 : "";
     return tok15Bits + win5Bits + String(payloadBits || "") + closeBits;
+  }
+
+  // Encodes a single step/value in [0 + modeA/B + (1-10) + (11-15)] structure
+  function encodeModeABSlot(val, modeB = false, slotWidth = 4) {
+    const modeBit = modeB ? "1" : "0";
+    const n = Number(val) || 0;
+    // Map into 1..15 range: 1..10 direct, >10 mapped into 11..15
+    const mapped = n <= 10 ? Math.max(1, n) : (11 + ((n - 11) % 5));
+    const slotBits = mapped.toString(2).padStart(slotWidth, "0");
+    return "0" + modeBit + slotBits;
+  }
+
+  // Builds a tokenised block: [0 + modeA/B + (1-10) + (11-15) + tokens... + null(exit)]
+  function buildModeABTokenBlock(tokenIds, modeB = false, slotWidth = 4) {
+    const ids = Array.isArray(tokenIds) ? tokenIds : [tokenIds];
+    let stream = "";
+    for (let i = 0; i < ids.length; i++) {
+      const useModeB = i === 0 ? Boolean(modeB) : !Boolean(modeB);
+      stream += encodeModeABSlot(ids[i], useModeB, slotWidth);
+    }
+    // null strictly exits the tokenised block
+    return stream + DWLE_NULL_EXIT;
+  }
+
+  // 3x repeat word tokeniser using Mode A/B + null-exit framing and strict profit guard
+  function encodeWordTokens3x(text, charBits = 8, slotWidth = 4) {
+    const str = String(text || "");
+    const words = str.match(/[A-Za-z0-9_]+/g) || [];
+    const freq = new Map();
+    for (const w of words) freq.set(w, (freq.get(w) || 0) + 1);
+
+    const candidates = [...freq.entries()]
+      .filter(([w, c]) => c >= 3 && w.length >= 2)
+      .sort((a, b) => b[0].length - a[0].length);
+
+    let working = str;
+    const tokens = [];
+    let tokenId = 1;
+
+    for (const [word] of candidates) {
+      let actualCount = 0;
+      let pos = 0;
+      while ((pos = working.indexOf(word, pos)) !== -1) {
+        actualCount++;
+        pos += word.length;
+      }
+      if (actualCount < 3) continue;
+
+      const rawWordBits = word.length * charBits;
+      const rawTotalBits = actualCount * rawWordBits;
+
+      // Token definition + Mode A/B token refs + null exit
+      const modeB = tokenId % 2 === 0;
+      const defBits = 2 + rawWordBits + DWLE_NULL_EXIT.length;
+      const singleRefBits = encodeModeABSlot(tokenId, modeB, slotWidth).length;
+      const tokenisedTotalBits = defBits + actualCount * singleRefBits + DWLE_NULL_EXIT.length;
+
+      if (tokenisedTotalBits < rawTotalBits) {
+        const marker = `[[T${tokenId}]]`;
+        working = working.split(word).join(marker);
+        tokens.push({
+          id: tokenId,
+          word,
+          count: actualCount,
+          mode: modeB ? "B" : "A",
+          rawTotalBits,
+          tokenisedTotalBits,
+          savedBits: rawTotalBits - tokenisedTotalBits,
+          blockBits: buildModeABTokenBlock(Array(actualCount).fill(tokenId), modeB, slotWidth)
+        });
+        tokenId++;
+      }
+    }
+
+    let baseText = working;
+    for (const t of tokens) {
+      baseText = baseText.split(`[[T${t.id}]]`).join("");
+    }
+    const nonTokenChars = Array.from(baseText).length * charBits;
+    const tokensCost = tokens.reduce((acc, t) => acc + t.tokenisedTotalBits, 0);
+    const totalEncodedBits = nonTokenChars + tokensCost;
+    const rawBits = Array.from(str).length * charBits;
+
+    return {
+      text: str,
+      rawBits,
+      totalEncodedBits,
+      netSavedBits: rawBits - totalEncodedBits,
+      tokens,
+      tokenizedPreview: working
+    };
   }
 
   // Strict profit guard: returns compressed only when net bit savings > 0
@@ -2312,9 +2404,13 @@ W8 (8-bit):  [00001011 = A]</pre>
     TOKEN_15: DWLE_TOKEN_15,
     MAX_5BIT_WIN: DWLE_MAX_5BIT_WIN,
     CLOSE_MARKER: DWLE_CLOSE_11_0010,
+    NULL_EXIT: DWLE_NULL_EXIT,
     encode5BitWindow,
     decode5BitWindow,
     buildSmartDefault15Frame,
+    encodeModeABSlot,
+    buildModeABTokenBlock,
+    encodeWordTokens3x,
     applyStrictProfitGuard
   };
 })();
