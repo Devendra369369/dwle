@@ -2268,6 +2268,58 @@ W8 (8-bit):  [00001011 = A]</pre>
     </div>
   </div>
 
+
+<script>
+// DWLE v2026.11 Smart Default (Token 15) + 5-bit Window + Strict Profit Guard
+(function () {
+  const DWLE_TOKEN_15 = 15;
+  const DWLE_MAX_5BIT_WIN = 31;
+  const DWLE_CLOSE_11_0010 = "000010110010"; // Slot 11 (8-bit) + 0010 close marker
+
+  function encode5BitWindow(winNum) {
+    const clamped = Math.max(0, Math.min(DWLE_MAX_5BIT_WIN, Number(winNum) || 0));
+    return clamped.toString(2).padStart(5, "0");
+  }
+
+  function decode5BitWindow(bitStr, offset = 0) {
+    const slice = String(bitStr || "").slice(offset, offset + 5);
+    if (slice.length < 5) return { win: 8, nextOffset: offset };
+    return { win: parseInt(slice, 2), nextOffset: offset + 5 };
+  }
+
+  function buildSmartDefault15Frame(winNum, payloadBits, closeDefault = true) {
+    const tok15Bits = DWLE_TOKEN_15.toString(2).padStart(8, "0");
+    const win5Bits = encode5BitWindow(winNum);
+    const closeBits = closeDefault ? DWLE_CLOSE_11_0010 : "";
+    return tok15Bits + win5Bits + String(payloadBits || "") + closeBits;
+  }
+
+  // Strict profit guard: returns compressed only when net bit savings > 0
+  function applyStrictProfitGuard(rawBitsLen, candidateBitsStr) {
+    const cand = String(candidateBitsStr || "");
+    if (!cand || cand.length >= rawBitsLen) {
+      return { usedCompressed: false, bitsLength: rawBitsLen, savedBits: 0 };
+    }
+    return {
+      usedCompressed: true,
+      bitsLength: cand.length,
+      savedBits: rawBitsLen - cand.length,
+      bits: cand
+    };
+  }
+
+  window.DWLESmartV2 = {
+    TOKEN_15: DWLE_TOKEN_15,
+    MAX_5BIT_WIN: DWLE_MAX_5BIT_WIN,
+    CLOSE_MARKER: DWLE_CLOSE_11_0010,
+    encode5BitWindow,
+    decode5BitWindow,
+    buildSmartDefault15Frame,
+    applyStrictProfitGuard
+  };
+})();
+</script>
+
 </body>
 </html>
 
