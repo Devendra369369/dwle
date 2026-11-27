@@ -2833,6 +2833,7 @@ window.DWLEContHybrid = (function () {
   return { encodeContHybrid, decodeContHybrid };
 })();
 </script>
+
 <script id="dwle-agent-rank-sync">
 (function () {
   function parseBits(text) {
@@ -2851,7 +2852,21 @@ window.DWLEContHybrid = (function () {
     return "Low (High Bits)";
   }
 
-  // Only rank & color-code comparison tables inside modal/overlay/secondary comparison views
+  function getActiveText() {
+    const inputs = Array.from(document.querySelectorAll("textarea, input[type='text']"));
+    for (const el of inputs) {
+      if (el.offsetParent !== null && el.value && el.value.trim().length > 0) {
+        return el.value;
+      }
+    }
+    for (const el of inputs) {
+      if (el.value && el.value.trim().length > 0) {
+        return el.value;
+      }
+    }
+    return "";
+  }
+
   function isSecondaryComparisonTable(table) {
     const headersText = table.textContent || "";
     const hasMethodsCol = /method/i.test(headersText) && /bits?/i.test(headersText);
@@ -2861,8 +2876,55 @@ window.DWLEContHybrid = (function () {
     return hasMethodsCol || inModalOrPage;
   }
 
+  function ensureContHybridRow(table) {
+    if (!window.DWLEContHybrid) return;
+    const text = getActiveText();
+    if (!text) return;
+
+    const tbody = table.tBodies[0] || table;
+    const rows = Array.from(tbody.querySelectorAll("tr")).filter((tr) => {
+      if (tr.querySelector("th")) return false;
+      return tr.querySelectorAll("td").length >= 3;
+    });
+    if (!rows.length) return;
+
+    const utf8Bits = new TextEncoder().encode(text).length * 8;
+    const hybrid = window.DWLEContHybrid.encodeContHybrid(text);
+    const contBits = hybrid.bits.length;
+    const savedBits = utf8Bits - contBits;
+    const savedPct = utf8Bits > 0 ? ((savedBits / utf8Bits) * 100).toFixed(1) : "0.0";
+
+    const headerCells = Array.from(table.querySelectorAll("thead th, tr:first-child th"));
+    const colCount = Math.max(rows[0].children.length, headerCells.length || 5);
+
+    let row = tbody.querySelector("tr[data-dwle-cont-hybrid='1']");
+    if (!row) {
+      row = document.createElement("tr");
+      row.setAttribute("data-dwle-cont-hybrid", "1");
+      for (let c = 0; c < colCount; c++) {
+        row.appendChild(document.createElement("td"));
+      }
+      tbody.appendChild(row);
+    }
+
+    const tds = Array.from(row.children);
+    const diffVsUtf8 = utf8Bits - contBits;
+    const resultText = diffVsUtf8 >= 0
+      ? "ContHybrid beats UTF-8 by " + diffVsUtf8 + "b"
+      : "UTF-8 beats by " + Math.abs(diffVsUtf8) + "b";
+
+    if (tds[0]) tds[0].textContent = "-";
+    if (tds[1]) tds[1].textContent = "DWLE-ContHybrid (Window+Backref)";
+    if (tds[2]) tds[2].textContent = "Hybrid / Custom";
+    if (tds[3]) tds[3].textContent = contBits + "b";
+    if (tds[4]) tds[4].textContent = savedPct + "%";
+    if (tds[5]) tds[5].textContent = resultText;
+  }
+
   function processSecondaryTable(table) {
     if (!isSecondaryComparisonTable(table)) return;
+    ensureContHybridRow(table);
+
     const tbody = table.tBodies[0] || table;
     const rows = Array.from(tbody.querySelectorAll("tr")).filter((tr) => {
       if (tr.querySelector("th")) return false;
@@ -2877,7 +2939,7 @@ window.DWLEContHybrid = (function () {
     if (bitColIdx === -1) {
       const sampleTds = Array.from(rows[0].children);
       bitColIdx = sampleTds.findIndex((td) => /^\d+\s*b$/i.test(td.textContent.trim()));
-      if (bitColIdx === -1) bitColIdx = 2;
+      if (bitColIdx === -1) bitColIdx = 3;
     }
 
     const items = rows.map((tr, origIdx) => {
@@ -2912,7 +2974,7 @@ window.DWLEContHybrid = (function () {
 
       if (rankColIdx !== -1 && tds[rankColIdx]) {
         tds[rankColIdx].textContent = String(r);
-      } else if (/^\d+$/.test(tds[0].textContent.trim())) {
+      } else if (/^(\d+|-)$/.test((tds[0].textContent || "").trim())) {
         tds[0].textContent = String(r);
       }
 
@@ -2946,7 +3008,7 @@ window.DWLEContHybrid = (function () {
   if (typeof MutationObserver !== "undefined") {
     const observer = new MutationObserver(() => {
       clearTimeout(window.__dwleSyncTimer);
-      window.__dwleSyncTimer = setTimeout(syncSecondaryViews, 50);
+      window.__dwleSyncTimer = setTimeout(syncSecondaryViews, 60);
     });
     if (typeof window !== "undefined" && window.addEventListener) {
       window.addEventListener("DOMContentLoaded", () => {
@@ -2963,7 +3025,8 @@ window.DWLEContHybrid = (function () {
     }
   }
   if (typeof document !== "undefined" && document.addEventListener) {
-    document.addEventListener("click", () => setTimeout(syncSecondaryViews, 100));
+    document.addEventListener("input", () => setTimeout(syncSecondaryViews, 60));
+    document.addEventListener("click", () => setTimeout(syncSecondaryViews, 120));
   }
 })();
 </script>
