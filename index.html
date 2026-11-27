@@ -530,7 +530,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
     }
 
-    function buildControlSequence(targetNum, w) {
+    function buildControlSequence(targetNum, w) { if (window.DWLERuleStream && typeof window.DWLERuleStream.encodeRuleStream === "function") { const h = (Number(w)||8).toString(2).padStart(8,"0"); const endTok = (window.DWLERuleStream.END_BITS || "01000011011"); return [{ bits: h + endTok, val: targetNum, desc: "RuleStream(8b+EndTok)->" + targetNum }]; }
       const maxVal = (1 << w) - 1;
       const directVal = 11 + targetNum;
       if (directVal >= 19 && directVal <= maxVal) {
@@ -3090,6 +3090,6 @@ window.DWLERuleStream = (function () {
       c[5].textContent = diff >= 0 ? "RuleStream beats UTF-8 by " + diff + "b" : "UTF-8 beats by " + Math.abs(diff) + "b";
     });
   }
-  setInterval(syncRow, 400);
+  let lastKey=""; const runSync=()=>{ const k=document.body.innerText.slice(0,120)+($("#sampleText")?.value||""); if(k===lastKey) return; lastKey=k; syncRow(); }; document.addEventListener("input",()=>setTimeout(runSync,80)); document.addEventListener("click",()=>setTimeout(runSync,140)); new MutationObserver(()=>setTimeout(runSync,100)).observe(document.body,{childList:true,subtree:true}); setTimeout(runSync,200);
 })();
 </script>
