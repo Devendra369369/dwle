@@ -233,7 +233,2465 @@ W8 (8-bit):  [00001011 = A]</pre>
     </footer>
   </div>
 
-  
+  <script>
+    const ORDERED_CONSONANTS = [
+      "क","ख","ग","घ","ङ","च","छ","ज","झ","ञ","ट","ठ","ड","ढ","ण",
+      "त","थ","द","ध","न","प","फ","ब","भ","म","य","र","ल","व",
+      "श","ष","स","ह","क़","ख़","ग़","ज़","ड़","ढ़","फ़","य़","ज्ञ","क्ष","त्र","श्र"
+    ];
+    const ORDERED_MATRAS = [
+      "ा","ि","ी","ु","ू","ृ","ॄ","ॅ","ॆ","े","ै","ॉ","ॊ","ो","ौ",
+      "्","ं","ः","ँ","़"
+    ];
+    const ORDERED_CONS_SET = new Set(ORDERED_CONSONANTS);
+    const ORDERED_MATRA_SET = new Set(ORDERED_MATRAS);
+
+    // Deterministic index (1..N) where slot = ((idx - 1) % cap) + 1 -> tokenVal = 13 + slot (>= 14)
+    const SYL_TO_ORD_IDX = new Map();
+    const ORD_IDX_TO_SYL = new Map();
+    (function buildOrderedBarakhadi() {
+      let ord = 1;
+      for (const c of ORDERED_CONSONANTS) {
+        for (const m of ORDERED_MATRAS) {
+          const syl = c + m;
+          if (!SYL_TO_ORD_IDX.has(syl)) {
+            SYL_TO_ORD_IDX.set(syl, ord);
+            ORD_IDX_TO_SYL.set(ord, syl);
+            ord += 1;
+          }
+        }
+      }
+    })();
+
+    function tokenizeDwleUnits(text) {
+      const cps = [...text];
+      const units = [];
+      let i = 0;
+      while (i < cps.length) {
+        const ch = cps[i];
+        if (ORDERED_CONS_SET.has(ch) && i + 1 < cps.length && ORDERED_MATRA_SET.has(cps[i + 1])) {
+          let unit = ch;
+          i += 1;
+          while (i < cps.length && ORDERED_MATRA_SET.has(cps[i])) {
+            const nextUnit = unit + cps[i];
+            if (SYL_TO_ORD_IDX.has(nextUnit)) {
+              unit = nextUnit;
+              i += 1;
+            } else {
+              break;
+            }
+          }
+          units.push(unit);
+        } else {
+          units.push(ch);
+          i += 1;
+        }
+      }
+      return units;
+    }
+
+    function isBarakhadiUnit(unit) {
+      return typeof unit === "string" && SYL_TO_ORD_IDX.has(unit);
+    }
+
+    function getBarakhadiOrd(unit) {
+      return SYL_TO_ORD_IDX.get(unit);
+    }
+
+            function getCharWindow(cp) {
+      if (cp >= 10000 && cp < 20000) return 10;
+      if (cp <= 0x7f) return 8;
+      if (cp >= 0x0900 && cp <= 0x097f) return 10;
+      if (cp >= 0x3400 && cp <= 0x9fff) return 13;
+      if (cp > 0xffff) return 17;
+      return 13;
+    }
+
+    function getDominantWindow(chars) {
+      const counts = new Map();
+      for (const ch of chars) {
+        const w = getCharWindow(ch.codePointAt(0));
+        counts.set(w, (counts.get(w) || 0) + 1);
+      }
+      let bestW = 8;
+      let bestCount = -1;
+      for (const [w, c] of counts.entries()) {
+        if (c > bestCount) {
+          bestCount = c;
+          bestW = w;
+        }
+      }
+      return bestW;
+    }
+
+    let binaryViewMode = "default";
+
+    const CJK_PUNCT = [
+      0x3001, 0x3002, 0x3008, 0x3009, 0x300a, 0x300b, 0x300c, 0x300d,
+      0x300e, 0x300f, 0x3010, 0x3011, 0xff01, 0xff08, 0xff09, 0xff0c,
+      0xff0e, 0xff1a, 0xff1b, 0xff1f, 0x201c, 0x201d, 0x2018, 0x2019
+    ];
+
+    function isFrenchOrEuropeanLatin(cp) {
+      return (cp >= 0x0080 && cp <= 0x024f) || (cp >= 0x1e00 && cp <= 0x1eff);
+    }
+
+    function isUrduPersianArabic(cp) {
+      return (
+        (cp >= 0x0600 && cp <= 0x077f) ||
+        (cp >= 0x08a0 && cp <= 0x08ff) ||
+        (cp >= 0xfb50 && cp <= 0xfdff) ||
+        (cp >= 0xfe70 && cp <= 0xfeff)
+      );
+    }
+
+    // Detect exact language/script family & target window by character code point
+    function detectScriptInfo(cp) {
+      if (cp <= 0x7f) {
+        return { lang: "ASCII / English", w: 8, base: 0x0000 };
+      }
+      if (isFrenchOrEuropeanLatin(cp)) {
+        const base = cp >= 0x1e00 ? 0x1e00 : 0x0080;
+        return { lang: "French / European Latin", w: 9, base };
+      }
+      if (cp >= 0x0900 && cp <= 0x097f) {
+        return { lang: "Hindi / Devanagari", w: 10, base: 0x0900 };
+      }
+      if (cp >= 0x0980 && cp <= 0x0dff) {
+        return { lang: "Indic (Bengali/Tamil/Telugu/etc.)", w: 10, base: 0x0980 };
+      }
+      if (cp >= 0x1f300 && cp <= 0x1faff) {
+        return { lang: "Emoji / Symbols", w: 11, base: 0x1f300 };
+      }
+      if (CJK_PUNCT.includes(cp)) {
+        return { lang: "CJK Punctuation", w: 13, base: 0x3000 };
+      }
+      if (cp >= 0x4e00 && cp <= 0x6d65) {
+        return { lang: "Han / Chinese (W13)", w: 13, base: 0x4e00 };
+      }
+      if (isUrduPersianArabic(cp)) {
+        const base = cp >= 0xfb50 ? 0xfb50 : 0x0600;
+        return { lang: "Urdu / Farsi / Arabic", w: 17, base };
+      }
+      if (cp >= 0x0400 && cp <= 0x052f) {
+        return { lang: "Cyrillic", w: 17, base: 0x0400 };
+      }
+      if (cp >= 0x0370 && cp <= 0x03ff) {
+        return { lang: "Greek", w: 17, base: 0x0370 };
+      }
+      if (cp >= 0x3040 && cp <= 0x30ff) {
+        return { lang: "Japanese Kana", w: 17, base: 0x3040 };
+      }
+      if (cp >= 0xac00 && cp <= 0xd7af) {
+        return { lang: "Korean Hangul", w: 17, base: 0xac00 };
+      }
+      if (cp <= 0xffff) {
+        return { lang: "World BMP Script", w: 17, base: 0x0000 };
+      }
+      return { lang: "Supplementary Unicode", w: 21, base: 0x10000 };
+    }
+
+    function getCharWindow(cp) {
+      return detectScriptInfo(cp).w;
+    }
+
+    function getDominantWindow(chars) {
+      if (!chars || chars.length === 0) return 8;
+      const counts = new Map();
+      for (const ch of chars) {
+        const w = getCharWindow(ch.codePointAt(0));
+        counts.set(w, (counts.get(w) || 0) + 1);
+      }
+      let bestW = 8;
+      let bestCnt = -1;
+      for (const [w, cnt] of counts.entries()) {
+        if (cnt > bestCnt) {
+          bestCnt = cnt;
+          bestW = w;
+        }
+      }
+      return bestW;
+    }
+
+    function getEffectiveWindow(cp, curW, dominantW) {
+      const info = detectScriptInfo(cp);
+      const wHere = info.w;
+      if (cp <= 0x7f) {
+        if (curW === 9 || dominantW === 9) return 9;
+        if (curW === 10 || dominantW === 10) return 10;
+        if (curW === 13 || dominantW === 13) return 13;
+        if (curW === 17 || dominantW === 17) return 17;
+      }
+      if (CJK_PUNCT.includes(cp) && (curW === 13 || dominantW === 13)) {
+        return 13;
+      }
+      return wHere;
+    }
+
+    // Finalized DWLE Architecture:
+    // 0 = null (Window trigger)
+    // 1..10 = Control digits 0..9 (1 -> 0 = Level trigger, 2..10 -> 1..9 = Nested trigger)
+    // 11 = Window Default reset, 12 = Nested Default reset, 13 = Level Default reset
+    // 14 .. (2^n - 1) = Character Data (slot = token - 13, 1-indexed)
+    // Control targets (after null or 0): token = 11 + number (11=0, 12=1, 13=2, ..., 21=10)
+
+    function detectLanguageSummary(chars) {
+      if (!chars || !chars.length) return "Empty";
+      let dev = 0, ascii = 0, other = 0;
+      for (const ch of chars) {
+        const cp = ch.codePointAt(0);
+        if (cp >= 0x0900 && cp <= 0x097F) dev++;
+        else if (cp < 128) ascii++;
+        else other++;
+      }
+      const parts = [];
+      if (dev) parts.push(`Devanagari(${dev})`);
+      if (ascii) parts.push(`ASCII(${ascii})`);
+      if (other) parts.push(`Other(${other})`);
+      return parts.join(" + ") || "Mixed";
+    }
+
+    function getWindowCharStart(w) {
+      return w >= 5 ? (18 + w) : 1;
+    }
+
+    function getWindowCharCapacity(w) {
+      if (w < 5) return Math.max(1, (1 << w) - 1);
+      return Math.max(1, (1 << w) - getWindowCharStart(w));
+    }
+
+    const W10_BARAKHADI_SYL_TO_CODE = new Map();
+    const W10_BARAKHADI_CODE_TO_SYL = new Map();
+
+    (function initW10Barakhadi() {
+      const baseList = typeof BARAKHADI_CONSONANTS !== "undefined" ? BARAKHADI_CONSONANTS : [
+        "क","ख","ग","घ","ङ","च","छ","ज","झ","ञ","ट","ठ","ड","ढ","ण",
+        "त","थ","द","ध","न","प","फ","ब","भ","म","य","र","ल","व",
+        "श","ष","स","ह"
+      ];
+      const matraList = typeof BARAKHADI_MATRAS !== "undefined" ? BARAKHADI_MATRAS : [
+        "ा","ि","ी","ु","ू","ृ","ॄ","ॅ","ॆ","े","ै","ॉ","ॊ","ो","ौ",
+        "्","ं","ः","ँ","़"
+      ];
+      let code = 3000;
+      for (const c of baseList) {
+        for (const m of matraList) {
+          const syl = c + m;
+          if (!W10_BARAKHADI_SYL_TO_CODE.has(syl)) {
+            W10_BARAKHADI_SYL_TO_CODE.set(syl, code);
+            W10_BARAKHADI_CODE_TO_SYL.set(code, syl);
+            code += 1;
+          }
+        }
+      }
+    })();
+
+    function isW10BarakhadiUnit(unit) {
+      return typeof unit === "string" && W10_BARAKHADI_SYL_TO_CODE.has(unit);
+    }
+
+    function getW10UnitCode(unit) {
+      return isW10BarakhadiUnit(unit) ? W10_BARAKHADI_SYL_TO_CODE.get(unit) : unit.codePointAt(0);
+    }
+
+    function getHybridW10Window(unit) {
+      if (isW10BarakhadiUnit(unit)) return 10;
+      const cp = unit.codePointAt(0);
+      if (cp <= 0x7f || (cp >= 0x0900 && cp <= 0x097f)) return 10;
+      return getCharWindow(cp);
+    }
+
+    function encodeWindowCharBits(cp, w) {
+      const cap = getWindowCharCapacity(w);
+      const charStart = getWindowCharStart(w);
+      let idx0 = 0;
+      if (w === 13 && cp >= 0x4e00 && cp <= 0x6d65) idx0 = cp - 0x4e00;
+      else if (w === 17 && cp >= 0x4e00 && cp <= 0x2ffff) idx0 = cp - 0x4e00;
+      else if (cp >= 10000 && cp < 20000) idx0 = 256 + (cp - 10000);
+      else if (cp >= 0x0900 && cp <= 0x097F) idx0 = 128 + (cp - 0x0900);
+      else if (cp < 128) idx0 = cp;
+      else idx0 = 20000 + cp;
+
+      const level = Math.floor(idx0 / cap) + 1;
+      const slot = (idx0 % cap) + 1;
+      const tokenVal = (charStart - 1) + slot;
+      return { bits: tokenVal.toString(2).padStart(w, "0"), level, slot, offset: slot, tokenVal };
+    }
+
+    function decodeWindowCharSlot(w, level, slot) {
+      const cap = getWindowCharCapacity(w);
+      const idx0 = (level - 1) * cap + (slot - 1);
+      if (w === 13 && idx0 >= 0 && idx0 <= (0x6d65 - 0x4e00)) return String.fromCodePoint(0x4e00 + idx0);
+      if (w === 17 && idx0 >= 0 && idx0 <= (0x2ffff - 0x4e00)) return String.fromCodePoint(0x4e00 + idx0);
+      if (idx0 >= 0 && idx0 < 128) return String.fromCodePoint(idx0);
+      if (idx0 >= 256 && typeof ORD_IDX_TO_SYL !== "undefined" && ORD_IDX_TO_SYL.has(idx0 - 256)) return ORD_IDX_TO_SYL.get(idx0 - 256);
+      if (idx0 >= 128 && idx0 < 256) return String.fromCodePoint(0x0900 + (idx0 - 128));
+      if (idx0 >= 20000) return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0 - 20000)));
+      return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
+    }
+
+    function buildControlSequence(targetNum, w) {
+      const maxVal = (1 << w) - 1;
+      const directVal = 11 + targetNum;
+      if (directVal >= 19 && directVal <= maxVal) {
+        return [{ bits: directVal.toString(2).padStart(w, "0"), val: directVal, desc: `${directVal}(11+${targetNum})` }];
+      }
+      const seq = String(targetNum).split("").map(d => {
+        const tok = Number(d) + 1;
+        return { bits: tok.toString(2).padStart(w, "0"), val: tok, desc: `${tok}(d:${d})` };
+      });
+      seq.push({ bits: (11).toString(2).padStart(w, "0"), val: 11, desc: "11(null)" });
+      return seq;
+    }
+
+    function buildCompressNumberTokens(num, w) {
+      const charStart = getWindowCharStart(w);
+      const maxVal = (1 << w) - 1;
+      const directVal = charStart + num;
+      if (num >= 0 && directVal <= maxVal) {
+        return [{ bits: directVal.toString(2).padStart(w, "0"), val: directVal, desc: `${directVal}(${charStart}+${num})` }];
+      }
+      const seq = String(num).split("").map(d => {
+        const tok = Number(d) + 1;
+        return { bits: tok.toString(2).padStart(w, "0"), val: tok, desc: `${tok}(d:${d})` };
+      });
+      seq.push({ bits: charStart.toString(2).padStart(w, "0"), val: charStart, desc: `${charStart}(0/null)` });
+      return seq;
+    }
+
+    function findBestRepeatMatch(chars, pos) {
+      const rem = chars.length - pos;
+      if (rem < 6) return null;
+      let best = null;
+      const maxBase = Math.min(512, rem);
+      for (let len = 3; len <= maxBase; len++) {
+        const base = chars.slice(pos, pos + len);
+        let copies = [base.slice()], cursor = pos + len, edits = [], prefixLen = len;
+        while (cursor < chars.length) {
+          const slice = chars.slice(cursor, cursor + len);
+          if (slice.length === len && slice.every((v, idx) => v === base[idx])) {
+            copies.push(slice); cursor += len; continue;
+          }
+          if (slice.length === len) {
+            const diffs = [];
+            for (let j = 0; j < len; j++) if (slice[j] !== base[j]) diffs.push(j);
+            if (diffs.length === 1) {
+              copies.push(slice);
+              edits.push({ copyIdx: copies.length, action: 2, pos: diffs[0] + 1, ch: slice[diffs[0]] });
+              cursor += len; continue;
+            }
+          }
+          if (cursor + len + 1 <= chars.length) {
+            const insSlice = chars.slice(cursor, cursor + len + 1);
+            let insPos = -1, ok = true;
+            for (let j = 0, k = 0; j < len + 1; j++) {
+              if (k < len && insSlice[j] === base[k]) k++;
+              else if (insPos === -1) insPos = j;
+              else { ok = false; break; }
+            }
+            if (ok && insPos !== -1) {
+              copies.push(insSlice);
+              edits.push({ copyIdx: copies.length, action: 1, pos: insPos + 1, ch: insSlice[insPos] });
+              cursor += len + 1; continue;
+            }
+          }
+          if (len >= 4 && cursor + len - 1 <= chars.length) {
+            const delSlice = chars.slice(cursor, cursor + len - 1);
+            let delPos = -1, ok = true;
+            for (let j = 0, k = 0; k < len; k++) {
+              if (j < len - 1 && delSlice[j] === base[k]) j++;
+              else if (delPos === -1) delPos = k;
+              else { ok = false; break; }
+            }
+            if (ok && delPos !== -1) {
+              copies.push(delSlice);
+              edits.push({ copyIdx: copies.length, action: 3, pos: delPos + 1 });
+              cursor += len - 1; continue;
+            }
+          }
+          if (edits.length === 0 && slice.length >= 2 && slice.every((v, idx) => v === base[idx])) {
+            copies.push(slice); prefixLen = slice.length; cursor += slice.length;
+          }
+          break;
+        }
+        const totalConsumed = cursor - pos;
+        if (copies.length >= 2) {
+          const overheadTokens = edits.length > 0 ? (4 + edits.length * 4) : (prefixLen < len ? 5 : 3);
+          const savedTokens = totalConsumed - (len + overheadTokens);
+          if (savedTokens >= 1 && (!best || savedTokens > best.savedTokens)) {
+            best = { base, count: copies.length, prefixLen, edits, totalConsumed, savedTokens };
+          }
+        }
+      }
+      return best;
+    }
+
+
+    // Level Jump Rules (non-nested):
+    // 1) [11 + (12..255)]
+    // 2) [11 + (1..10) + (11..255)]
+    // Master code [0 + (12..255)] and [0 + (1..10) + (11..255)] is reserved and untouched.
+    function emitLevelJumpTokens(emitToken, curW, levelVal, targetSlot) {
+      if (typeof levelVal === "number" && levelVal >= 1 && levelVal <= 10) {
+        emitToken(11, curW, `${curW}w11(LvlJump)`, "11:LvlJump");
+        emitToken(levelVal, curW, `${curW}w${levelVal}(Lvl:${levelVal})`, `L${levelVal}`);
+        const clampedSlot = Math.max(11, Math.min(255, Number(targetSlot) || 11));
+        emitToken(clampedSlot, curW, `${curW}w${clampedSlot}(Slot:${clampedSlot})`, `S${clampedSlot}`);
+        return;
+      }
+      emitToken(11, curW, `${curW}w11(LvlJump)`, "11:LvlJump");
+      const clampedDirect = Math.max(12, Math.min(255, Number(targetSlot) || 12));
+      emitToken(clampedDirect, curW, `${curW}w${clampedDirect}(Slot:${clampedDirect})`, `S${clampedDirect}`);
+    }
+
+    function computeDwleStream(text) {
+      const chars = tokenizeDwleUnits(text);
+      let curW = 8, curL = 1, curN = 1;
+      const defW = 8, defL = 1, defN = 1;
+      const bits = [], readLines = [], tokenSegments = [], flowLines = [];
+      const domW = getDominantWindow(chars);
+
+      function emitToken(val, w, readDesc, segLabel) {
+        const b = val.toString(2).padStart(w, "0");
+        for (const c of b) bits.push(Number(c));
+        readLines.push(`${b}=${readDesc}`);
+        tokenSegments.push({ bits: b, label: segLabel });
+      }
+
+      function emitUnit(ch, idxLabel) {
+        const isBara = typeof isBarakhadiUnit === "function" && isBarakhadiUnit(ch);
+        const cp = isBara ? (10000 + getBarakhadiOrd(ch)) : ch.codePointAt(0);
+        const targetW = (isBara || cp <= 0x7f || (cp >= 0x0900 && cp <= 0x097f))
+          ? (curW === 8 && !isBara && cp <= 0x7f ? 8 : 10) : getCharWindow(cp);
+
+        if (targetW !== curW) {
+          if (targetW === defW && curW !== defW) {
+            emitToken(12, curW, `${curW}w12(WinDef->W${defW})`, `12:WinDef->W${defW}`);
+            flowLines.push(`Reset 12 -> Default W${defW} at ${idxLabel} [${ch}]`);
+            curW = defW; curL = defL; curN = defN;
+          } else {
+            emitToken(0, curW, `${curW}null(WinTrig)`, `null:WinTrig`);
+            for (const item of buildControlSequence(targetW, curW)) {
+              emitToken(item.val, curW, `${curW}wTarget=${item.desc}->W${targetW}`, `W${targetW}`);
+            }
+            flowLines.push(`Switch W${curW} -> W${targetW} at ${idxLabel} [${ch}]`);
+            curW = targetW; curL = 1;
+          }
+        }
+
+        const enc = encodeWindowCharBits(cp, curW);
+        if (enc.level !== curL) {
+          if (enc.level === defL && curL !== defL) {
+            emitToken(14, curW, `${curW}w14(LvlDef->L${defL})`, `14:LvlDef->L${defL}`);
+            curL = defL;
+          } else {
+            emitToken(1, curW, `${curW}w1(0=LvlTrig)`, `0:LvlTrig`);
+            for (const item of buildControlSequence(enc.level, curW)) {
+              emitToken(item.val, curW, `${curW}wLvl=${item.desc}->L${enc.level}`, `L${enc.level}`);
+            }
+            curL = enc.level;
+          }
+        }
+        emitToken(enc.tokenVal, curW, `${curW}w${curN}L${curL}=${ch}(slot:${enc.slot},tok:${enc.tokenVal})`, `${curW}wL${curL}:${ch}`);
+      }
+
+      function emitCompressNum(num, label) {
+        for (const item of buildCompressNumberTokens(num, curW)) {
+          emitToken(item.val, curW, `${curW}w${label}=${item.desc}`, `${label}:${num}`);
+        }
+      }
+
+      for (let i = 0; i < chars.length; ) {
+        const rep = findBestRepeatMatch(chars, i);
+        if (rep) {
+          emitToken(16, curW, `${curW}w16(RepeatOpen)`, "16:RepOpen");
+          for (let k = 0; k < rep.base.length; k++) emitUnit(rep.base[k], `#${i + k + 1}`);
+          emitToken(16, curW, `${curW}w16(RepeatClose)`, "16:RepClose");
+          if (rep.edits.length > 0) {
+            emitToken(17, curW, `${curW}w17(AssistOpen)`, "17:Assist");
+            emitCompressNum(rep.count, "repCount");
+            for (const ed of rep.edits) {
+              emitCompressNum(ed.copyIdx, "copyIdx");
+              emitCompressNum(ed.action, ed.action === 1 ? "ins" : (ed.action === 2 ? "rep" : "del"));
+              emitCompressNum(ed.pos, "pos");
+              if (ed.action === 1 || ed.action === 2) emitUnit(ed.ch, `edit@${ed.pos}`);
+            }
+            emitToken(16, curW, `${curW}w16(AssistClose)`, "16:AssistEnd");
+          } else if (rep.prefixLen < rep.base.length) {
+            emitToken(16, curW, `${curW}w16(PrefixMode)`, "16:Prefix");
+            emitCompressNum(rep.count, "repCount");
+            emitCompressNum(rep.prefixLen, "prefixLen");
+          } else {
+            emitCompressNum(rep.count, "repCount");
+          }
+          flowLines.push(`Repeat x${rep.count} (${rep.base.join("")}) saved ${rep.savedTokens} tok`);
+          i += rep.totalConsumed;
+          continue;
+        }
+        emitUnit(chars[i], `#${i + 1}`);
+        i += 1;
+      }
+
+      return {
+        totalBits: bits.length,
+        bits,
+        dominantW: domW,
+        flowLines: [`Languages: ${detectLanguageSummary(chars)} | Dominant: W${domW}`, ...(flowLines.length ? flowLines : ["Pure W8 L1 stream (0 switch overhead)"])].slice(0, 14),
+        readLines,
+        tokenSegments
+      };
+    }
+
+    function decodeDwleBits(bitString) {
+      const clean = bitString.replace(/[^01]/g, "");
+      let pos = 0, curW = 8, curL = 1, curN = 1;
+      const defW = 8, defL = 1, defN = 1;
+      let out = "";
+
+      function readWidthToken(w) {
+        if (pos + w > clean.length) return null;
+        const s = clean.slice(pos, pos + w);
+        pos += w;
+        return parseInt(s, 2);
+      }
+      function peekWidthToken(w) {
+        return pos + w > clean.length ? null : parseInt(clean.slice(pos, pos + w), 2);
+      }
+      function readControlNumber(w) {
+        const first = readWidthToken(w);
+        if (first === null) return null;
+        if (first >= 19) return first - 11;
+        let numStr = "", cur = first;
+        while (cur !== null && cur !== 11 && cur !== 0) {
+          if (cur >= 1 && cur <= 10) numStr += String(cur - 1);
+          cur = readWidthToken(w);
+        }
+        return numStr.length ? parseInt(numStr, 10) : 0;
+      }
+      function readCompressNumber() {
+        const charStart = getWindowCharStart(curW);
+        const first = readWidthToken(curW);
+        if (first === null) return 0;
+        if (first >= 1 && first <= 10) {
+          let digits = String(first - 1);
+          while (pos + curW <= clean.length) {
+            const nxt = readWidthToken(curW);
+            if (nxt === null || nxt === charStart) break;
+            if (nxt >= 1 && nxt <= 10) digits += String(nxt - 1);
+          }
+          return parseInt(digits, 10);
+        }
+        return Math.max(0, first - charStart);
+      }
+      function handleControlToken(tok) {
+        if (tok === 0) {
+          const nextW = readControlNumber(curW);
+          if (nextW !== null && nextW >= 5 && nextW <= 21) { curW = nextW; curL = 1; }
+        } else if (tok === 1) {
+          const nextL = readControlNumber(curW);
+          if (nextL !== null) curL = nextL >= 1 ? nextL : 1;
+        } else if (tok >= 2 && tok <= 10) {
+          const nextN = readControlNumber(curW);
+          if (nextN !== null && nextN >= 1) curN = nextN;
+        } else if (tok === 12) { curW = defW; curL = defL; curN = defN; }
+        else if (tok === 13) { curN = defN; }
+        else if (tok === 14) { curL = defL; }
+        else if (tok >= 19 && tok <= (17 + curW)) {
+          const subW = tok - 18;
+          if (subW >= 1 && subW <= 4) {
+            let sawNonZero = false;
+            while (pos + subW <= clean.length) {
+              const st = readWidthToken(subW);
+              if (st === null) break;
+              if (st === 0) { if (sawNonZero) break; }
+              else sawNonZero = true;
+              out += decodeWindowCharSlot(subW, curL, st + 1);
+            }
+          }
+        }
+      }
+      function readSingleCharOrControl() {
+        while (pos + curW <= clean.length) {
+          const tok = readWidthToken(curW);
+          if (tok === null) return null;
+          const charStart = getWindowCharStart(curW);
+          if (tok >= charStart) return decodeWindowCharSlot(curW, curL, tok - charStart + 1);
+          handleControlToken(tok);
+        }
+        return null;
+      }
+
+      while (pos + curW <= clean.length) {
+        const tok = readWidthToken(curW);
+        if (tok === null) break;
+        const charStart = getWindowCharStart(curW);
+        if (tok === 16) {
+          const baseUnits = [];
+          while (pos + curW <= clean.length) {
+            const nxt = peekWidthToken(curW);
+            if (nxt === 16) { readWidthToken(curW); break; }
+            const t = readWidthToken(curW);
+            const cs = getWindowCharStart(curW);
+            if (t >= cs) baseUnits.push(decodeWindowCharSlot(curW, curL, t - cs + 1));
+            else handleControlToken(t);
+          }
+          const post = peekWidthToken(curW);
+          if (post === 17) {
+            readWidthToken(curW);
+            const count = readCompressNumber();
+            const copies = Array.from({ length: count }, () => baseUnits.slice());
+            const editsByCopy = new Map();
+            while (pos + curW <= clean.length) {
+              const nxt = peekWidthToken(curW);
+              if (nxt === 16) { readWidthToken(curW); break; }
+              const copyIdx = readCompressNumber();
+              const action = readCompressNumber();
+              const editPos = readCompressNumber();
+              let ch = null;
+              if (action === 1 || action === 2) ch = readSingleCharOrControl();
+              if (!editsByCopy.has(copyIdx)) editsByCopy.set(copyIdx, []);
+              editsByCopy.get(copyIdx).push({ action, pos: editPos, ch });
+            }
+            for (const [cIdx, list] of editsByCopy.entries()) {
+              const arr = copies[cIdx - 1];
+              if (!arr) continue;
+              list.sort((a, b) => b.pos - a.pos);
+              for (const ed of list) {
+                if (ed.action === 1 && ed.ch !== null) arr.splice(ed.pos - 1, 0, ed.ch);
+                else if (ed.action === 2 && ed.ch !== null) arr[ed.pos - 1] = ed.ch;
+                else if (ed.action === 3) arr.splice(ed.pos - 1, 1);
+              }
+            }
+            out += copies.map(c => c.join("")).join("");
+          } else if (post === 16) {
+            readWidthToken(curW);
+            const count = readCompressNumber();
+            const prefLen = readCompressNumber();
+            for (let c = 0; c < count - 1; c++) out += baseUnits.join("");
+            if (count >= 1) out += baseUnits.slice(0, prefLen).join("");
+          } else {
+            const count = readCompressNumber();
+            for (let c = 0; c < count; c++) out += baseUnits.join("");
+          }
+        } else if (tok >= charStart) {
+          out += decodeWindowCharSlot(curW, curL, tok - charStart + 1);
+        } else {
+          handleControlToken(tok);
+        }
+      }
+      return out;
+    }
+
+    function encodeW5Control(val) {
+      const clamped = Math.max(0, Math.min(31, Number(val) || 0));
+      return clamped.toString(2).padStart(5, "0");
+    }
+
+    let __dwleBinaryMode = "default";
+    let __dwleLastReadLines = [];
+
+    function getActiveComposerBits() {
+      const binEl = document.getElementById("binaryText");
+      if (binEl && binEl.value && binEl.value.replace(/[^01]/g, "").length > 0) {
+        return binEl.value.replace(/[^01]/g, "");
+      }
+      const sampleEl = document.getElementById("sampleText");
+      const text = sampleEl ? (sampleEl.value || "") : "";
+      if (!text) return "";
+      return computeSmartJumpStream(text).bits.join("");
+    }
+
+    function setComposerBits(bitStr, labelInfo) {
+      const binEl = document.getElementById("binaryText");
+      if (Array.isArray(labelInfo)) {
+        __dwleLastReadLines = labelInfo.slice();
+      }
+      if (!binEl) return;
+      if (__dwleBinaryMode === "read" && __dwleLastReadLines.length > 0) {
+        binEl.value = __dwleLastReadLines.join("\n");
+      } else {
+        binEl.value = bitStr || "";
+      }
+    }
+
+    function setBinaryMode(mode) {
+      __dwleBinaryMode = mode === "read" ? "read" : "default";
+      const binEl = document.getElementById("binaryText");
+      const btnDef = document.getElementById("btnModeDefault");
+      const btnRead = document.getElementById("btnModeRead");
+      if (btnDef) btnDef.style.background = __dwleBinaryMode === "default" ? "#0369a1" : "#334155";
+      if (btnRead) btnRead.style.background = __dwleBinaryMode === "read" ? "#0369a1" : "#334155";
+
+      if (!binEl) return;
+      if (__dwleBinaryMode === "read") {
+        if (__dwleLastReadLines.length > 0) {
+          binEl.value = __dwleLastReadLines.join("\n");
+        } else {
+          const sampleEl = document.getElementById("sampleText");
+          const txt = sampleEl ? (sampleEl.value || "") : "";
+          if (txt) {
+            const st = computeDwleStream(txt);
+            __dwleLastReadLines = st.readLines;
+            binEl.value = st.readLines.join("\n");
+          }
+        }
+      } else {
+        const sampleEl = document.getElementById("sampleText");
+        const txt = sampleEl ? (sampleEl.value || "") : "";
+        if (txt) {
+          binEl.value = computeDwleStream(txt).bits.join("");
+        } else {
+          binEl.value = binEl.value.replace(/[^01]/g, "");
+        }
+      }
+    }
+
+    function formatTokenLines() {
+      const sampleEl = document.getElementById("sampleText");
+      const txt = sampleEl ? (sampleEl.value || "") : "";
+      const binEl = document.getElementById("binaryText");
+      if (txt) {
+        const st = computeDwleStream(txt);
+        __dwleLastReadLines = st.readLines;
+        if (binEl) binEl.value = st.readLines.join("\n");
+      } else if (binEl && binEl.value.trim()) {
+        const clean = binEl.value.replace(/[^01]/g, "");
+        const lines = [];
+        for (let i = 0; i < clean.length; i += 8) {
+          lines.push(clean.slice(i, i + 8));
+        }
+        binEl.value = lines.join("\n");
+      }
+    }
+
+    function copyBinaryStream() {
+      const binEl = document.getElementById("binaryText");
+      const val = binEl ? binEl.value : "";
+      if (!val) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(val).catch(() => {});
+      }
+      const resEl = document.getElementById("resultBox");
+      if (resEl) resEl.innerHTML = `<strong>Copy 01:</strong> ${val.replace(/[^01]/g, "").length} bits copy ho gaye.`;
+    }
+
+    function toggleNirdesh() {
+      const box = document.getElementById("nirdeshBox");
+      if (!box) return;
+      const isHidden = box.style.display === "none" || !box.style.display;
+      box.style.display = isHidden ? "block" : "none";
+      if (isHidden && !box.textContent.trim()) {
+        box.innerHTML =
+          "<strong>DWLE Token Nirdesh:</strong> " +
+          "<code>00000000</code> (null) = Window trigger | " +
+          "<code>00000001</code> (1-1=0) = Level trigger | " +
+          "<code>2..10</code> (1..9) = Nested trigger | " +
+          "<code>11</code> = Window Default | <code>12</code> = Nested Default | <code>13</code> = Level Default | " +
+          "<code>14+</code> = Character slot (<code>token - 13</code>, 1-indexed).";
+      }
+    }
+
+    function fillHindi1KB() {
+      pushDwleHistory();
+      const base = "भारत एक विशाल देश है जहाँ अनेक भाषाएँ और बोलियाँ बोली जाती हैं। विज्ञान, तकनीक और शिक्षा के क्षेत्र में निरंतर प्रगति हो रही है। ";
+      let out = "";
+      while (new TextEncoder().encode(out).length < 1024) {
+        out += base;
+      }
+      const sampleEl = document.getElementById("sampleText");
+      if (sampleEl) {
+        sampleEl.value = out;
+        estimateBits();
+      }
+    }
+
+    function copySampleText() {
+      const sampleEl = document.getElementById("sampleText");
+      const val = sampleEl ? sampleEl.value : "";
+      if (!val) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(val).catch(() => {});
+      }
+      const resEl = document.getElementById("resultBox");
+      if (resEl) resEl.innerHTML = `<strong>Copy Text:</strong> ${[...val].length} characters copy ho gaye.`;
+    }
+
+    const __dwleUndoStack = [];
+    const __dwleRedoStack = [];
+
+    function pushDwleHistory() {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const snap = {
+        sample: sampleEl ? sampleEl.value : "",
+        binary: binEl ? binEl.value : ""
+      };
+      const last = __dwleUndoStack[__dwleUndoStack.length - 1];
+      if (!last || last.sample !== snap.sample || last.binary !== snap.binary) {
+        __dwleUndoStack.push(snap);
+        if (__dwleUndoStack.length > 30) __dwleUndoStack.shift();
+        __dwleRedoStack.length = 0;
+      }
+    }
+
+    function undoDwleState() {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const resEl = document.getElementById("resultBox");
+      if (!__dwleUndoStack.length) {
+        if (resEl) resEl.textContent = "Undo ke liye koi purani state nahi hai.";
+        return;
+      }
+      __dwleRedoStack.push({
+        sample: sampleEl ? sampleEl.value : "",
+        binary: binEl ? binEl.value : ""
+      });
+      const prev = __dwleUndoStack.pop();
+      if (sampleEl) sampleEl.value = prev.sample;
+      if (binEl) binEl.value = prev.binary;
+      if (resEl) resEl.textContent = "Undo ho gaya — purana text aur binary wapas aa gaya.";
+    }
+
+    function redoDwleState() {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const resEl = document.getElementById("resultBox");
+      if (!__dwleRedoStack.length) {
+        if (resEl) resEl.textContent = "Redo ke liye koi state nahi hai.";
+        return;
+      }
+      __dwleUndoStack.push({
+        sample: sampleEl ? sampleEl.value : "",
+        binary: binEl ? binEl.value : ""
+      });
+      const next = __dwleRedoStack.pop();
+      if (sampleEl) sampleEl.value = next.sample;
+      if (binEl) binEl.value = next.binary;
+      if (resEl) resEl.textContent = "Redo ho gaya.";
+    }
+
+    function clearSample() {
+      pushDwleHistory();
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryText");
+      const resEl = document.getElementById("resultBox");
+      const flowEl = document.getElementById("visualFlowBox");
+      if (sampleEl) sampleEl.value = "";
+      if (binEl) binEl.value = "";
+      __dwleLastReadLines = [];
+      if (resEl) resEl.textContent = 'Upar "Compress & Calculate" par click karo.';
+      if (flowEl) flowEl.textContent = "";
+    }
+
+    function downloadUnicodeFile() {
+      const sampleEl = document.getElementById("sampleText");
+      const txt = sampleEl ? (sampleEl.value || "") : "";
+      const blob = new Blob([txt], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "dwle_unicode.txt";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function handleDwleUpload(event) {
+      const input = event && event.target ? event.target : document.getElementById("dwleFileInput");
+      const file = input && input.files && input.files[0];
+      if (!file) return;
+
+      const reader = new FileReader();
+      reader.onload = function (e) {
+        const raw = e && e.target ? e.target.result : "";
+        let bitStr = "";
+
+        if (typeof raw === "string") {
+          bitStr = raw.replace(/[^01]/g, "");
+        } else if (raw instanceof ArrayBuffer) {
+          const bytes = new Uint8Array(raw);
+          const asText = new TextDecoder().decode(bytes);
+          const onlyBits = asText.replace(/[^01]/g, "");
+          // If file looks like ASCII 0/1 text, use those bits; otherwise unpack raw bytes to bits
+          if (onlyBits.length >= 8 && onlyBits.length >= asText.trim().length * 0.8) {
+            bitStr = onlyBits;
+          } else {
+            let unpacked = "";
+            for (let i = 0; i < bytes.length; i++) {
+              unpacked += bytes[i].toString(2).padStart(8, "0");
+            }
+            bitStr = unpacked;
+          }
+        }
+
+        const binEl = document.getElementById("binaryText");
+        if (binEl) {
+          binEl.value = bitStr;
+        }
+        __dwleLastReadLines = [];
+
+        const decoded = decodeDwleBits(bitStr);
+        const sampleEl = document.getElementById("sampleText");
+        if (sampleEl) {
+          sampleEl.value = decoded;
+        }
+
+        const resEl = document.getElementById("resultBox");
+        if (resEl) {
+          resEl.innerHTML =
+            `<strong>Loaded File:</strong> ${file.name} (${bitStr.length} bits) | ` +
+            `<strong>Decoded:</strong> ${decoded.replace(/</g, "&lt;")}`;
+        }
+
+        if (input) input.value = "";
+      };
+
+      reader.readAsArrayBuffer(file);
+    }
+
+    function downloadDwleFile() {
+      const bits = getActiveComposerBits();
+      const blob = new Blob([bits], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "dwle_stream.dwle";
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    }
+
+    function calcBenchmarkStats(text, dwleBits) {
+      const syms = [...text];
+      const u8 = new TextEncoder().encode(text).length * 8;
+      const u16 = text.length * 16;
+      const u32 = syms.length * 32;
+      let huffTot = 0;
+      if (syms.length > 0) {
+        const freq = new Map();
+        for (const c of syms) freq.set(c, (freq.get(c) || 0) + 1);
+        if (freq.size === 1) huffTot = syms.length + 16;
+        else {
+          const nodes = [...freq.entries()].map(([, f]) => ({ f }));
+          while (nodes.length > 1) {
+            nodes.sort((a, b) => a.f - b.f);
+            const a = nodes.shift(), b = nodes.shift();
+            nodes.push({ f: a.f + b.f });
+          }
+          const avg = Math.log2(freq.size);
+          huffTot = Math.ceil(syms.length * avg) + freq.size * 10;
+        }
+      }
+      const defEst = Math.max(16, Math.ceil(u8 * 0.65) + 16);
+      const pct = u8 > 0 ? (((u8 - dwleBits) / u8) * 100).toFixed(1) : "0.0";
+      return { u8, u16, u32, huffTot, defEst, pct };
+    }
+    function computeSmartDwleStream(text) {
+      const base = computeDwleStream(text);
+      if (!text || text.length < 4) return base;
+      // Full-text lookahead pass: try reversed/segment chunks and pick shortest lossless pure-DWLE stream
+      const candidates = [base];
+      const parts = text.match(/[^\n.!?।]+[.!?।\n]*\s*/g) || [text];
+      if (parts.length > 1) {
+        const merged = [];
+        let tot = 0;
+        const fLines = [];
+        const rLines = [];
+        const segs = [];
+        for (const p of parts) {
+          if (!p) continue;
+          const r = computeDwleStream(p);
+          merged.push(...r.bits);
+          tot += r.totalBits;
+          if (r.flowLines) fLines.push(...r.flowLines);
+          if (r.readLines) rLines.push(...r.readLines);
+          if (r.tokenSegments) segs.push(...r.tokenSegments);
+        }
+        if (tot > 0 && tot <= base.totalBits && decodeDwleBits(merged.join("")) === text) {
+          candidates.push({
+            totalBits: tot,
+            bits: merged,
+            dominantW: base.dominantW,
+            flowLines: fLines,
+            readLines: rLines,
+            tokenSegments: segs
+          });
+        }
+      }
+      candidates.sort((a, b) => a.totalBits - b.totalBits);
+      return candidates[0];
+    }
+
+
+    function estimateAllCompressionMethods(text, dwleBits, smartBits) {
+      const s = typeof calcBenchmarkStats === "function" ? calcBenchmarkStats(text, dwleBits) : {
+        u8: (typeof Buffer !== "undefined" ? Buffer.byteLength(text, "utf8") : text.length) * 8,
+        u16: text.length * 16,
+        u32: text.length * 32,
+        huffTot: 0,
+        defEst: 0
+      };
+      const baseDef = s.defEst || s.u8;
+      const lz4Est = Math.max(8, Math.round(baseDef * 1.12));
+      const zstdEst = Math.max(8, Math.round(baseDef * 0.92));
+      const brotliEst = Math.max(8, Math.round(baseDef * 0.88));
+      const bwtEst = Math.max(8, Math.round(((s.huffTot || s.u8) + baseDef) / 2 * 0.95));
+      const ctxTokenEst = Math.max(8, Math.round(Math.min(dwleBits || s.u8, baseDef) * 1.02));
+      const microCustomEst = Math.max(8, Math.round((s.huffTot || s.u8) * 1.05));
+
+      const mine = Math.min(dwleBits || s.u8, smartBits || dwleBits || s.u8);
+      const rows = [
+        { name: "DWLE-Smart (Your Method)", tier: "Top #1 (Mine)", bits: smartBits || dwleBits },
+        { name: "DWLE Pure (Your Method)", tier: "Top #2 (Mine)", bits: dwleBits },
+        { name: "Indie Bit-Packer (Unlisted / Small)", tier: "Small / Indie", bits: Math.max(8, Math.round((s.u8 || 8) * 0.72)) },
+        { name: "Micro / Custom Indie (Small/New)", tier: "Small / Indie", bits: microCustomEst },
+        { name: "Context / Window Token (~)", tier: "New / Token", bits: ctxTokenEst },
+        { name: "BWT + MTF (~)", tier: "Block / Classic-New", bits: bwtEst },
+        { name: "LZ4 (~)", tier: "Fast / Modern", bits: lz4Est },
+        { name: "Zstandard / Zstd (~)", tier: "Popular / Modern", bits: zstdEst },
+        { name: "Brotli (~)", tier: "Popular / Web", bits: brotliEst },
+        { name: "DEFLATE (~)", tier: "Popular / Classic", bits: baseDef },
+        { name: "Huffman (~)", tier: "Popular / Entropy", bits: s.huffTot || s.u8 },
+        { name: "UTF-8", tier: "Standard Encoding", bits: s.u8 },
+        { name: "UTF-16", tier: "Standard Encoding", bits: s.u16 },
+        { name: "UTF-32", tier: "Standard Encoding", bits: s.u32 }
+      ];
+
+      return rows.map(r => {
+        const diffVsMine = r.bits - mine;
+        const status = diffVsMine < 0 ? `Other wins by ${Math.abs(diffVsMine)}b`
+                     : diffVsMine === 0 ? "Equal (Tie)"
+                     : `DWLE beats by ${diffVsMine}b`;
+        const savUtf8 = s.u8 > 0 ? (((s.u8 - r.bits) / s.u8) * 100).toFixed(1) + "%" : "0.0%";
+        return { ...r, savUtf8, status };
+      });
+    }
+
+    function openFullMethodsPage() {
+      const ta = document.getElementById("sampleText");
+      const text = ta ? ta.value : "";
+      let dwBits = 0;
+      let smartBits = 0;
+      try {
+        if (typeof computeDwleStream === "function") dwBits = computeDwleStream(text).totalBits;
+        if (typeof computeSmartDwleStream === "function") smartBits = computeSmartDwleStream(text).totalBits;
+        else smartBits = dwBits;
+      } catch (_) {}
+
+      const rows = estimateAllCompressionMethods(text, dwBits, smartBits);
+      const sub = document.getElementById("fullMethodsSubtitle");
+      if (sub) sub.textContent = `Input length: ${[...text].length} chars | DWLE: ${dwBits}b | DWLE-Smart: ${smartBits}b`;
+
+      const lc = countCharsByLanguage(text);
+      const langEl = document.getElementById("fullMethodsLangCount");
+      if (langEl) {
+        langEl.textContent = `Total: ${lc.total} chars | ASCII/EN: ${lc.ascii} | Devanagari/HI: ${lc.devanagari} | CJK: ${lc.cjk} | Other: ${lc.other}`;
+      }
+      const body = document.getElementById("fullMethodsBody");
+      if (body) {
+        const trs = rows.map((r, idx) => {
+          const highlight = idx < 2 ? 'style="background:#172554; font-weight:700;"' : "";
+          return `<tr ${highlight}>
+            <td>${idx + 1}</td>
+            <td>${r.name}</td>
+            <td>${r.tier}</td>
+            <td>${r.bits}b</td>
+            <td>${r.savUtf8}</td>
+            <td>${r.status}</td>
+          </tr>`;
+        }).join("");
+        body.innerHTML = `<div style="overflow-x:auto;"><table border="1" cellpadding="8" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left; border-color:#334155;">
+          <thead><tr style="background:#1e293b;"><th>#</th><th>Method</th><th>Level / Popularity</th><th>Bits</th><th>Saved vs UTF-8</th><th>DWLE Result</th></tr></thead>
+          <tbody>${trs}</tbody>
+        </table></div>`;
+      }
+
+      const modal = document.getElementById("fullMethodsModal");
+      if (modal) modal.style.display = "block";
+    }
+
+    function closeFullMethodsPage() {
+      const modal = document.getElementById("fullMethodsModal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function showAllMethodsComparison() {
+      const ta = document.getElementById("sampleText");
+      const txt = ta ? ta.value : "";
+      let dwBits = 0;
+      try {
+        if (typeof computeDwleStream === "function") {
+          dwBits = computeDwleStream(txt).totalBits;
+        }
+      } catch (_) {}
+      renderCompareCard(txt, dwBits);
+      const card = document.getElementById("compareCard");
+      if (card && typeof card.scrollIntoView === "function") {
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+
+    function calcFreshStats(text, dwleBits) {
+      const str = String(text || "");
+      const u8Bytes = typeof TextEncoder !== "undefined"
+        ? new TextEncoder().encode(str).length
+        : (typeof Buffer !== "undefined" ? Buffer.byteLength(str, "utf8") : str.length);
+      const u8 = u8Bytes * 8;
+      const chars = [...str].length;
+      const u16 = chars * 16;
+      const u32 = chars * 32;
+
+      const freq = new Map();
+      for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+      let entropyBits = 0;
+      const totalChars = [...freq.values()].reduce((a, b) => a + b, 0);
+      if (totalChars > 0) {
+        for (const cnt of freq.values()) {
+          const p = cnt / totalChars;
+          entropyBits += cnt * Math.max(1, -Math.log2(p));
+        }
+      }
+      const huffTot = str.length ? Math.max(8, Math.ceil(entropyBits) + freq.size * 6) : 0;
+      const defEst = str.length ? Math.max(8, Math.round(huffTot * 0.85 + 24)) : 0;
+      const zstdEst = str.length ? Math.max(8, Math.round(defEst * 0.92)) : 0;
+
+      let smartBits = dwleBits;
+      try {
+        if (typeof computeSmartDwleStream === "function" && str.length > 0) {
+          smartBits = computeSmartDwleStream(str).totalBits;
+        }
+      } catch (_) {}
+
+      const bestMine = Math.min(dwleBits || 0, smartBits || 0);
+      const pct = u8 > 0 ? (((u8 - bestMine) / u8) * 100).toFixed(1) : "0.0";
+      return { u8, u16, u32, huffTot, defEst, zstdEst, smartBits, pct };
+    }
+
+
+    function getUnifiedMethodEstimates(text, dwleBits, smartBits) {
+      const str = String(text || "");
+      const u8Bytes = typeof TextEncoder !== "undefined"
+        ? new TextEncoder().encode(str).length
+        : (typeof Buffer !== "undefined" ? Buffer.byteLength(str, "utf8") : str.length);
+      const u8 = u8Bytes * 8;
+      const chars = [...str].length;
+      const u16 = chars * 16;
+      const u32 = chars * 32;
+
+      let dBits = (typeof dwleBits === "number" && !Number.isNaN(dwleBits) && dwleBits > 0) ? dwleBits : 0;
+      if (!dBits && str.length > 0 && typeof computeDwleStream === "function") {
+        try { dBits = computeDwleStream(str).totalBits; } catch (_) {}
+      }
+
+      let sBits = (typeof smartBits === "number" && !Number.isNaN(smartBits) && smartBits > 0) ? smartBits : dBits;
+      if (str.length > 0 && typeof computeSmartDwleStream === "function") {
+        try { sBits = computeSmartDwleStream(str).totalBits; } catch (_) {}
+      }
+
+      const freq = new Map();
+      for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+      let entropy = 0;
+      if (chars > 0) {
+        for (const cnt of freq.values()) {
+          const p = cnt / chars;
+          entropy += cnt * Math.max(1, -Math.log2(p));
+        }
+      }
+      const huffTot = str.length ? Math.max(8, Math.ceil(entropy) + freq.size * 6) : 0;
+      const defEst = str.length ? Math.max(8, Math.round(huffTot * 0.85 + 24)) : 0;
+      const zstdEst = str.length ? Math.max(8, Math.round(defEst * 0.92)) : 0;
+      const brotliEst = str.length ? Math.max(8, Math.round(defEst * 0.88)) : 0;
+      const lz4Est = str.length ? Math.max(8, Math.round(defEst * 1.12)) : 0;
+      const bwtEst = str.length ? Math.max(8, Math.round(((huffTot || u8) + defEst) / 2 * 0.95)) : 0;
+      const ctxTokenEst = str.length ? Math.max(8, Math.round(Math.min(dBits || u8, defEst) * 1.02)) : 0;
+      const indiePackerEst = str.length ? Math.max(8, Math.round((u8 || 8) * 0.72)) : 0;
+      const microCustomEst = str.length ? Math.max(8, Math.round((huffTot || u8) * 1.05)) : 0;
+
+      const bestMine = Math.min(dBits || 0, sBits || 0);
+      const pct = u8 > 0 ? (((u8 - bestMine) / u8) * 100).toFixed(1) : "0.0";
+
+      const rows = [
+        { name: "DWLE-Smart (Your Method)", tier: "Top #1 (Mine)", bits: sBits },
+        { name: "DWLE Pure (Your Method)", tier: "Top #2 (Mine)", bits: dBits },
+        { name: "Indie Bit-Packer (Unlisted / Small)", tier: "Small / Indie", bits: indiePackerEst },
+        { name: "Micro / Custom Indie (Small/New)", tier: "Small / Indie", bits: microCustomEst },
+        { name: "Context / Window Token (~)", tier: "New / Token", bits: ctxTokenEst },
+        { name: "BWT + MTF (~)", tier: "Block / Classic-New", bits: bwtEst },
+        { name: "LZ4 (~)", tier: "Fast / Modern", bits: lz4Est },
+        { name: "Zstandard / Zstd (~)", tier: "Popular / Modern", bits: zstdEst },
+        { name: "Brotli (~)", tier: "Popular / Web", bits: brotliEst },
+        { name: "DEFLATE (~)", tier: "Popular / Classic", bits: defEst },
+        { name: "Huffman (~)", tier: "Popular / Entropy", bits: huffTot },
+        { name: "UTF-8", tier: "Standard Encoding", bits: u8 },
+        { name: "UTF-16", tier: "Standard Encoding", bits: u16 },
+        { name: "UTF-32", tier: "Standard Encoding", bits: u32 }
+      ].map(r => {
+        const diffVsMine = r.bits - bestMine;
+        const status = diffVsMine < 0 ? `Est. other -${Math.abs(diffVsMine)}b`
+                     : diffVsMine === 0 ? "Equal (Tie)"
+                     : `DWLE beats by ${diffVsMine}b`;
+        const savUtf8 = u8 > 0 ? (((u8 - r.bits) / u8) * 100).toFixed(1) + "%" : "0.0%";
+        return { ...r, savUtf8, status };
+      });
+
+      return { u8, u16, u32, huffTot, defEst, zstdEst, brotliEst, dBits, sBits, bestMine, pct, chars, rows };
+    }
+
+    
+    
+
+    
+
+    function renderCompareCard(text, dwleBits) {
+      const wrap = document.getElementById("compareTableWrap");
+      if (!wrap) return;
+      const t = (typeof text === "string") ? text : (document.getElementById("sampleText")?.value || "");
+      const m = getUnifiedMethodEstimates(t, dwleBits);
+      updateMainCharCount(t);
+      wrap.innerHTML = `<div style="overflow-x:auto;"><table border="1" cellpadding="6" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left;">
+        <tr><th>UTF-8</th><th>UTF-16</th><th>UTF-32</th><th>Huffman(~)</th><th>DEFLATE(~)</th><th>Zstd(~)</th><th>DWLE</th><th>DWLE-Smart</th><th>Saved vs UTF-8</th></tr>
+        <tr><td>${m.u8}b</td><td>${m.u16}b</td><td>${m.u32}b</td><td>${m.huffTot}b</td><td>${m.defEst}b</td><td>${m.zstdEst}b</td><td><b>${m.dBits}b</b></td><td><b>${m.sBits}b</b></td><td><b>${m.pct}%</b></td></tr>
+      </table></div>`;
+    }
+
+    function syncFromModalComposer(val) {
+      const ta = document.getElementById("sampleText");
+      if (ta) {
+        ta.value = val;
+        ta.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      openFullMethodsPage(true);
+    }
+
+    function clearFromFullMethods() {
+      syncFromModalComposer("");
+    }
+
+
+    function countCharsByLanguage(text) {
+      const str = String(text || "");
+      const arr = [...str];
+      let ascii = 0, devanagari = 0, cjk = 0, other = 0;
+      for (const ch of arr) {
+        const cp = ch.codePointAt(0);
+        if (cp <= 0x7F) ascii++;
+        else if (cp >= 0x0900 && cp <= 0x097F) devanagari++;
+        else if ((cp >= 0x4E00 && cp <= 0x9FFF) || (cp >= 0x3400 && cp <= 0x4DBF) || (cp >= 0x3040 && cp <= 0x30FF)) cjk++;
+        else other++;
+      }
+      return { total: arr.length, ascii, devanagari, cjk, other };
+    }
+
+    function updateMainCharCount(text) {
+      const el = document.getElementById("mainCharCount");
+      if (!el) return;
+      const c = countCharsByLanguage(text);
+      el.textContent = `(Total Chars: ${c.total})`;
+    }
+
+    function openFullMethodsPage(skipComposerSync) {
+      const _lcStr = (typeof arguments[1] === "string") ? arguments[1] : (document.getElementById("sampleText")?.value || "");
+      const _lc = countCharsByLanguage(_lcStr);
+      const _langEl = document.getElementById("fullMethodsLangCount");
+      if (_langEl) {
+        _langEl.textContent = `Total: ${_lc.total} chars | ASCII/EN: ${_lc.ascii} | Devanagari/HI: ${_lc.devanagari} | CJK: ${_lc.cjk} | Other: ${_lc.other}`;
+      }
+      const ta = document.getElementById("sampleText");
+      const text = ta ? ta.value : "";
+      const m = getUnifiedMethodEstimates(text);
+
+      if (!skipComposerSync) {
+        const mc = document.getElementById("modalLiveComposer");
+        if (mc && mc.value !== text) mc.value = text;
+      }
+
+      const sub = document.getElementById("fullMethodsSubtitle");
+      if (sub) sub.textContent = `Input length: ${m.chars} chars | DWLE: ${m.dBits}b | DWLE-Smart: ${m.sBits}b (Unified with Main Page)`;
+
+      const body = document.getElementById("fullMethodsBody");
+      if (body) {
+        const trs = m.rows.map((r, idx) => {
+          const highlight = idx < 2 ? 'style="background:#172554; font-weight:700;"' : "";
+          return `<tr ${highlight}>
+            <td>${idx + 1}</td>
+            <td>${r.name}</td>
+            <td>${r.tier}</td>
+            <td>${r.bits}b</td>
+            <td>${r.savUtf8}</td>
+            <td>${r.status}</td>
+          </tr>`;
+        }).join("");
+        body.innerHTML = `<div style="overflow-x:auto;"><table border="1" cellpadding="8" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left; border-color:#334155;">
+          <thead><tr style="background:#1e293b;"><th>#</th><th>Method</th><th>Level / Popularity</th><th>Bits</th><th>Saved vs UTF-8</th><th>DWLE Result</th></tr></thead>
+          <tbody>${trs}</tbody>
+        </table></div>`;
+      }
+
+      const modal = document.getElementById("fullMethodsModal");
+      if (modal) modal.style.display = "block";
+    }
+
+    function closeFullMethodsPage() {
+      const modal = document.getElementById("fullMethodsModal");
+      if (modal) modal.style.display = "none";
+    }
+
+    function showAllMethodsComparison() {
+      const ta = document.getElementById("sampleText");
+      const txt = ta ? ta.value : "";
+      let dwBits = 0;
+      try {
+        if (typeof computeDwleStream === "function") {
+          dwBits = computeDwleStream(txt).totalBits;
+        }
+      } catch (_) {}
+      renderCompareCard(txt, dwBits);
+      const card = document.getElementById("compareCard");
+      if (card && typeof card.scrollIntoView === "function") {
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+
+    function calcFreshStats(text, dwleBits) {
+      const str = String(text || "");
+      const u8Bytes = typeof TextEncoder !== "undefined"
+        ? new TextEncoder().encode(str).length
+        : (typeof Buffer !== "undefined" ? Buffer.byteLength(str, "utf8") : str.length);
+      const u8 = u8Bytes * 8;
+      const chars = [...str].length;
+      const u16 = chars * 16;
+      const u32 = chars * 32;
+
+      const freq = new Map();
+      for (const ch of str) freq.set(ch, (freq.get(ch) || 0) + 1);
+      let entropyBits = 0;
+      const totalChars = [...freq.values()].reduce((a, b) => a + b, 0);
+      if (totalChars > 0) {
+        for (const cnt of freq.values()) {
+          const p = cnt / totalChars;
+          entropyBits += cnt * Math.max(1, -Math.log2(p));
+        }
+      }
+      const huffTot = str.length ? Math.max(8, Math.ceil(entropyBits) + freq.size * 6) : 0;
+      const defEst = str.length ? Math.max(8, Math.round(huffTot * 0.85 + 24)) : 0;
+      const zstdEst = str.length ? Math.max(8, Math.round(defEst * 0.92)) : 0;
+
+      let smartBits = dwleBits;
+      try {
+        if (typeof computeSmartDwleStream === "function" && str.length > 0) {
+          smartBits = computeSmartDwleStream(str).totalBits;
+        }
+      } catch (_) {}
+
+      const bestMine = Math.min(dwleBits || 0, smartBits || 0);
+      const pct = u8 > 0 ? (((u8 - bestMine) / u8) * 100).toFixed(1) : "0.0";
+      return { u8, u16, u32, huffTot, defEst, zstdEst, smartBits, pct };
+    }
+
+    function renderCompareCard(text, dwleBits) {
+      updateMainCharCount(typeof text === "string" ? text : (document.getElementById("sampleText")?.value || ""));
+      const t = (typeof text === "string") ? text : (document.getElementById("sampleText")?.value || "");
+      let dBits = (typeof dwleBits === "number" && !Number.isNaN(dwleBits)) ? dwleBits : 0;
+      if (!dBits && t && typeof computeDwleStream === "function") {
+        try { dBits = computeDwleStream(t).totalBits; } catch (_) {}
+      }
+      const m = calcFreshStats(t, dBits);
+      const htmlTable = `<div style="overflow-x:auto;"><table border="1" cellpadding="6" cellspacing="0" style="width:100%; border-collapse:collapse; text-align:left;">
+        <tr><th>UTF-8</th><th>UTF-16</th><th>UTF-32</th><th>Huffman(~)</th><th>DEFLATE(~)</th><th>Zstd(~)</th><th>DWLE</th><th>DWLE-Smart</th><th>Saved vs UTF-8</th></tr>
+        <tr><td>${m.u8}b</td><td>${m.u16}b</td><td>${m.u32}b</td><td>${m.huffTot}b</td><td>${m.defEst}b</td><td>${m.zstdEst}b</td><td><b>${dBits}b</b></td><td><b>${m.smartBits}b</b></td><td><b>${m.pct}%</b></td></tr>
+      </table></div>`;
+
+      const wrap = document.getElementById("compareTableWrap");
+      if (wrap) wrap.innerHTML = htmlTable;
+    }
+
+    function estimateBits() {
+      const sampleEl = document.getElementById("sampleText");
+      const text = sampleEl ? (sampleEl.value || "") : "";
+      const normalDwle = computeDwleStream(text);
+      const smartDwle = computeSmartJumpStream(text);
+      const utf8Bits = new TextEncoder().encode(text).length * 8;
+      const savedVsUtf8 = utf8Bits - normalDwle.totalBits;
+
+      const bitStr = normalDwle.bits.join("");
+      setComposerBits(bitStr, normalDwle.readLines);
+
+      const resEl = document.getElementById("resultBox");
+      if (resEl) {
+        resEl.innerHTML =
+          `<strong>DWLE Total:</strong> ${normalDwle.totalBits} bits | ` +
+          `<strong>Smart Jump:</strong> ${smartDwle.totalBits} bits | ` +
+          `<strong>UTF-8:</strong> ${utf8Bits} bits | ` +
+          `<strong>Bachat vs UTF-8:</strong> ${savedVsUtf8} bits`;
+      }
+
+      const flowEl = document.getElementById("visualFlowBox");
+      if (flowEl) {
+        flowEl.textContent = normalDwle.flowLines.join("\n");
+      }
+    }
+
+    function decodeBinaryToText() {
+      pushDwleHistory();
+      const rawBits = getActiveComposerBits();
+      if (!rawBits) {
+        const resEl = document.getElementById("resultBox");
+        if (resEl) resEl.textContent = "Decode karne ke liye pehle 0/1 bits ya text daalo.";
+        return;
+      }
+      const decoded = decodeDwleBits(rawBits);
+      const sampleEl = document.getElementById("sampleText");
+      if (sampleEl) sampleEl.value = decoded;
+
+      const resEl = document.getElementById("resultBox");
+      if (resEl) {
+        resEl.innerHTML = `<strong>Decoded Text (${rawBits.length} bits):</strong> ${decoded.replace(/</g, "&lt;")}`;
+      }
+    }
+
+
+    function evalW5JumpCandidate(chars) {
+      let curW = 8;
+      let curLevel = 1;
+      const bits = [];
+      const readLines = [];
+      const tokenSegments = [];
+      const jumps = [];
+
+      for (let i = 0; i < chars.length; i++) {
+        const ch = chars[i];
+        const cp = ch.codePointAt(0);
+        const charW = getCharWindow(cp);
+
+        let aheadRun = 1;
+        while (i + aheadRun < chars.length && getCharWindow(chars[i + aheadRun].codePointAt(0)) === charW) {
+          aheadRun += 1;
+        }
+
+        let targetW = curW;
+        if (charW === 8 && curW !== 8 && aheadRun >= 2) {
+          targetW = 8;
+        } else if (charW !== 8 && (aheadRun >= 2 || curW === charW)) {
+          targetW = charW;
+        } else if (charW !== 8 && curW === 8) {
+          targetW = charW;
+        }
+
+        if (targetW !== curW) {
+          const w5Null = encodeW5Control(0);            // 00000 = 5-bit W5 escape trigger
+          const ctrlVal = 11 + targetW;                 // 11 + number rule (11=0..21=10)
+          const w5Jump = encodeW5Control(ctrlVal);      // 5-bit target token
+          const seq = w5Null + w5Jump;
+
+          for (const c of seq) bits.push(Number(c));
+          readLines.push(`${w5Null}=5wEsc(0)`);
+          readLines.push(`${w5Jump}=5wJump(${ctrlVal}->W${targetW})`);
+          tokenSegments.push({ bits: seq, label: `W5->W${targetW}` });
+          jumps.push(`W5 Jump W${curW} -> W${targetW} (10 bits) at #${i + 1} [${ch}]`);
+          curW = targetW;
+          curLevel = 1;
+        }
+
+        const enc = encodeWindowCharBits(cp, curW);
+        if (enc.level !== curLevel) {
+          const lvlDefBits = (13).toString(2).padStart(curW, "0");
+          if (enc.level === 1 && curLevel !== 1) {
+            for (const c of lvlDefBits) bits.push(Number(c));
+            readLines.push(`${lvlDefBits}=${curW}w13(LvlDefault->L1)`);
+            tokenSegments.push({ bits: lvlDefBits, label: `13:LvlDef` });
+          } else {
+            const lvlTrigBits = (1).toString(2).padStart(curW, "0");
+            for (const c of lvlTrigBits) bits.push(Number(c));
+            readLines.push(`${lvlTrigBits}=${curW}w1(0=LvlTrig)`);
+            tokenSegments.push({ bits: lvlTrigBits, label: `0:LvlTrig` });
+
+            const ctrlSeq = buildControlSequence(enc.level, curW);
+            for (const item of ctrlSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wLvl=${item.desc}->L${enc.level}`);
+              tokenSegments.push({ bits: item.bits, label: `L${enc.level}` });
+            }
+          }
+          curLevel = enc.level;
+        }
+
+        for (const c of enc.bits) bits.push(Number(c));
+        readLines.push(`${enc.bits}=${curW}w${curN}L${curL}=${ch}(slot:${enc.slot},tok:${enc.tokenVal})`);
+        tokenSegments.push({ bits: enc.bits, label: `${curW}wL${curLevel}:${ch}` });
+      }
+
+      return {
+        totalBits: bits.length,
+        bits,
+        readLines,
+        tokenSegments,
+        jumps
+      };
+    }
+
+    function evalBlockWindowStream(units, blockSize, forcedMode) {
+      let curW = 8;
+      let curL = 1;
+      let curN = 1;
+      const defW = 8;
+      const defL = 1;
+      const defN = 1;
+      const bits = [];
+      const readLines = [];
+      const tokenSegments = [];
+      const jumps = [];
+
+      function emitToken(tokVal, w, label, desc) {
+        const b = tokVal.toString(2).padStart(w, "0");
+        for (const c of b) bits.push(Number(c));
+        readLines.push(`${b}=${w}${desc}`);
+        tokenSegments.push({ bits: b, label });
+      }
+
+      function switchToWindow(targetW, reasonChar, blockIdx) {
+        if (targetW === curW) return;
+        if (targetW === defW && curW !== defW) {
+          emitToken(11, curW, `11:WinDef->W${defW}`, `w11(WinDefault->W${defW})`);
+          curW = defW;
+          curL = defL;
+          curN = defN;
+          jumps.push(`Blk#${blockIdx + 1}: Reset 11 -> W${defW}, L${defL}^${defN} at [${reasonChar}]`);
+        } else {
+          emitToken(0, curW, "0:WinTrig", `${curW}null(WinTrig)`);
+          const seq = buildControlSequence(targetW, curW);
+          for (const item of seq) {
+            for (const c of item.bits) bits.push(Number(c));
+            readLines.push(`${item.bits}=${curW}wTarget=${item.desc}->W${targetW}`);
+            tokenSegments.push({ bits: item.bits, label: `W${targetW}` });
+          }
+          curW = targetW;
+          curL = 1;
+          curN = 1;
+          jumps.push(`Blk#${blockIdx + 1}: Jump -> W${targetW}, L${curL}^${curN} at [${reasonChar}]`);
+        }
+      }
+
+      function setLevelAndNested(targetL, targetN) {
+        if (targetL !== curL) {
+          if (targetL === defL && curL !== defL) {
+            emitToken(13, curW, `13:LvlDef->L${defL}`, `w13(LvlDefault->L${defL})`);
+            curL = defL;
+          } else {
+            emitToken(1, curW, "1:LvlTrig", `w1(0=LvlTrig)`);
+            const lSeq = buildControlSequence(targetL, curW);
+            for (const item of lSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wLvl=${item.desc}->L${targetL}`);
+              tokenSegments.push({ bits: item.bits, label: `L${targetL}` });
+            }
+            curL = targetL;
+          }
+        }
+        if (targetN !== curN) {
+          if (targetN === defN && curN !== defN) {
+            emitToken(12, curW, `12:NestDef->N${defN}`, `w12(NestDefault->N${defN})`);
+            curN = defN;
+          } else {
+            const nTrig = Math.min(10, Math.max(2, targetN + 1));
+            emitToken(nTrig, curW, `N:${targetN}`, `w${nTrig}(Nested->N${targetN})`);
+            const nSeq = buildControlSequence(targetN, curW);
+            for (const item of nSeq) {
+              for (const c of item.bits) bits.push(Number(c));
+              readLines.push(`${item.bits}=${curW}wNest=${item.desc}->N${targetN}`);
+              tokenSegments.push({ bits: item.bits, label: `N${targetN}` });
+            }
+            curN = targetN;
+          }
+        }
+      }
+
+      for (let start = 0; start < units.length; start += blockSize) {
+        const end = Math.min(units.length, start + blockSize);
+        const blockIdx = Math.floor(start / blockSize);
+        const slice = units.slice(start, end);
+
+        let chosenW = curW;
+        if (forcedMode) {
+          chosenW = forcedMode;
+        } else {
+          // Compare W8, W9, W10 on this block (default start W8)
+          let asciiCount = 0;
+          let baraCount = 0;
+          let devaCount = 0;
+          for (const u of slice) {
+            if (isBarakhadiUnit(u)) baraCount += 1;
+            else {
+              const cp = u.codePointAt(0);
+              if (cp <= 0x7f) asciiCount += 1;
+              else if (cp >= 0x0900 && cp <= 0x097f) devaCount += 1;
+            }
+          }
+          if (asciiCount === slice.length) {
+            chosenW = 8;
+          } else if (baraCount >= devaCount && baraCount > 0) {
+            chosenW = 9;
+          } else if (devaCount > 0 || baraCount > 0) {
+            chosenW = 10;
+          } else {
+            chosenW = getCharWindow(slice[0].codePointAt(0));
+          }
+        }
+
+        for (let i = 0; i < slice.length; i++) {
+          const u = slice[i];
+          let codeVal = 0;
+          let unitW = chosenW;
+
+          if (isBarakhadiUnit(u)) {
+            codeVal = 10000 + getBarakhadiOrd(u);
+            unitW = chosenW === 8 ? 10 : 10;
+          } else {
+            codeVal = u.codePointAt(0);
+            if (forcedMode === 10) {
+              unitW = codeVal <= 0x7f || (codeVal >= 0x0900 && codeVal <= 0x097f) ? 10 : getCharWindow(codeVal);
+            } else if (forcedMode === 9) {
+              unitW = codeVal <= 0x7f ? 8 : (codeVal >= 0x0900 && codeVal <= 0x097f ? 9 : getCharWindow(codeVal));
+            } else if (forcedMode === 8) {
+              unitW = codeVal <= 0x7f ? 8 : getCharWindow(codeVal);
+            } else {
+              if (codeVal <= 0x7f && chosenW === 8) unitW = 8;
+              else if (codeVal <= 0x7f && chosenW === 10 && slice.length > 4) unitW = 10;
+              else if (codeVal <= 0x7f) unitW = 8;
+              else if (codeVal >= 0x0900 && codeVal <= 0x097f) unitW = chosenW === 9 ? 9 : 10;
+              else unitW = getCharWindow(codeVal);
+            }
+          }
+
+          if (unitW !== curW) {
+            switchToWindow(unitW, u, blockIdx);
+          }
+
+          const enc = encodeWindowCharBits(codeVal, curW);
+          const nestedLevel = Math.max(1, Math.ceil(Math.log2(enc.level + 1)));
+          setLevelAndNested(enc.level, nestedLevel);
+
+          const slotBits = enc.bits;
+          for (const c of slotBits) bits.push(Number(c));
+          readLines.push(`${slotBits}=${curW}w${curN}L${curL}=${u}(slot:${enc.slot},tok:${enc.tokenVal})`);
+          tokenSegments.push({ bits: slotBits, label: `${curW}wL${curL}^${curN}:${u}` });
+        }
+      }
+
+      renderCompareCard(text, bits.length);
+      return { totalBits: bits.length, bits, readLines, tokenSegments, jumps };
+    }
+
+        function computeSmartJumpStream(text) {
+      const base = computeDwleStream(text);
+      const units = typeof segmentTextUnits === "function" ? segmentTextUnits(text) : Array.from(text);
+      if (!units.length) return { ...base, smartMeta: { chosenLabel: "Empty", candidates: [] } };
+
+      function runComboStream(allowedSet, forceStartW) {
+        let curW = 8;
+        let curL = 1;
+        let curN = 1;
+        const bits = [];
+        const readLines = [];
+        let jumps = 0;
+
+        function pushCtrl(seq, descPrefix) {
+          for (const item of seq) {
+            bits.push(item.bits);
+            readLines.push(`${item.bits}=${curW}w${descPrefix}:${item.desc}`);
+          }
+        }
+
+        if (forceStartW && forceStartW !== curW) {
+          bits.push("0".repeat(curW));
+          readLines.push(`${"0".repeat(curW)}=${curW}null(WinTrig)`);
+          pushCtrl(buildControlSequence(forceStartW - 10, curW), `Target=${11 + (forceStartW - 10)}->W${forceStartW}`);
+          curW = forceStartW;
+          curL = 1;
+          jumps++;
+        }
+
+        for (let i = 0; i < units.length; i++) {
+          const u = units[i];
+          const isBara = typeof isBarakhadiUnit === "function" && isBarakhadiUnit(u);
+          const cp = isBara ? (10000 + getBarakhadiOrd(u)) : u.codePointAt(0);
+
+          let desiredW = curW;
+          if (allowedSet && allowedSet.size > 0) {
+            if (isBara) {
+              if (allowedSet.has(10)) desiredW = 10;
+              else if (allowedSet.has(9)) desiredW = 9;
+              else if (allowedSet.has(8)) desiredW = 8;
+            } else if (cp <= 0x7f) {
+              if (allowedSet.has(8) && !allowedSet.has(10)) desiredW = 8;
+              else if (allowedSet.has(10)) desiredW = 10;
+              else if (allowedSet.has(9)) desiredW = 9;
+              else if (allowedSet.has(8)) desiredW = 8;
+            } else {
+              const natW = getCharWindow(cp);
+              if (allowedSet.has(natW)) desiredW = natW;
+              else if (allowedSet.has(10)) desiredW = 10;
+              else if (allowedSet.has(9)) desiredW = 9;
+              else if (allowedSet.has(8)) desiredW = 8;
+              else desiredW = natW;
+            }
+          }
+
+          if (desiredW !== curW) {
+            if (desiredW === 8 && curW === 10 && cp <= 0x7f && allowedSet && allowedSet.has(10)) {
+              desiredW = 10;
+            }
+          }
+
+          if (desiredW !== curW) {
+            if (desiredW === 8) {
+              bits.push((11).toString(2).padStart(curW, "0"));
+              readLines.push(`${(11).toString(2).padStart(curW, "0")}=${curW}w11(WinDefault->W8)`);
+              curW = 8;
+              curL = 1;
+              jumps++;
+            } else {
+              bits.push("0".repeat(curW));
+              readLines.push(`${"0".repeat(curW)}=${curW}null(WinTrig)`);
+              const seq = buildControlSequence(desiredW - 10, curW);
+              pushCtrl(seq, `Target=${11 + (desiredW - 10)}->W${desiredW}`);
+              curW = desiredW;
+              curL = 1;
+              jumps++;
+            }
+          }
+
+          const enc = encodeWindowCharBits(cp, curW);
+          if (enc.level !== curL) {
+            bits.push((1).toString(2).padStart(curW, "0"));
+            readLines.push(`${curW}w1(0=LvlTrig)`);
+            const lSeq = buildControlSequence(enc.level, curW);
+            pushCtrl(lSeq, `Lvl=${11 + enc.level}->L${enc.level}`);
+            curL = enc.level;
+          }
+
+          bits.push(enc.bits);
+          readLines.push(`${enc.bits}=${curW}w${curN}L${curL}=${u}(slot:${enc.slot},tok:${enc.tokenVal})`);
+        }
+
+        const totalBits = bits.reduce((acc, b) => acc + b.length, 0);
+        return { bits, readLines, totalBits, jumps };
+      }
+
+      const combos = [
+        { label: "W10 Only", res: runComboStream(new Set([10]), 10) },
+        { label: "W8 Only", res: runComboStream(new Set([8]), 8) },
+        { label: "W9 Only", res: runComboStream(new Set([9]), 9) },
+        { label: "W13 Only", res: runComboStream(new Set([13]), 13) },
+        { label: "W17 Only", res: runComboStream(new Set([17]), 17) },
+        { label: "W8+10", res: runComboStream(new Set([8, 10]), 10) },
+        { label: "W9+10", res: runComboStream(new Set([9, 10]), 10) },
+        { label: "W8+9", res: runComboStream(new Set([8, 9]), 9) },
+        { label: "W8+9+10", res: runComboStream(new Set([8, 9, 10]), 10) },
+        { label: "W8+13", res: runComboStream(new Set([8, 13]), 8) },
+        { label: "W8+17", res: runComboStream(new Set([8, 17]), 8) },
+        { label: "Default Stream", res: base }
+      ];
+
+      function isLosslessCandidate(c) {
+        if (!c || !c.res || !Array.isArray(c.res.bits)) return false;
+        if (typeof decodeDwleBits !== "function") return true;
+        try {
+          return decodeDwleBits(c.res.bits.join("")) === text;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      const validCombos = combos.filter(isLosslessCandidate);
+      const pool = validCombos.length ? validCombos : [{ label: "Default Stream", res: base }];
+
+      let best = pool.find(c => c.label === "Default Stream") || pool[0];
+      for (const c of pool) {
+        if (c.res && typeof c.res.totalBits === "number" && c.res.totalBits < best.res.totalBits) {
+          best = c;
+        }
+      }
+
+      return {
+        ...best.res,
+        smartMeta: {
+          chosenLabel: best.label,
+          savedVsBase: base.totalBits - best.res.totalBits,
+          candidates: combos.map(c => ({ label: c.label, bits: c.res.totalBits }))
+        }
+      };
+    }
+
+    function estimateScsuLikeBits(text) {
+      // Approximate SCSU-style dynamic window + literal/UTF-16 fallback byte size
+      const units = Array.from(text);
+      if (!units.length) return 0;
+      let bytes = 1; // initial window byte
+      let activeBase = 0x0000;
+      for (const u of units) {
+        const cp = u.codePointAt(0);
+        if (cp <= 0x7f) {
+          bytes += 1;
+        } else if (cp >= activeBase && cp < activeBase + 128) {
+          bytes += 1;
+        } else {
+          // Shift window (2 bytes) + 1 byte offset (or 2 bytes for supplementary)
+          activeBase = cp & ~0x7f;
+          bytes += (cp > 0xffff ? 4 : 3);
+        }
+      }
+      return bytes * 8;
+    }
+
+    function estimateDeflateBits(text) {
+      if (!text) return 0;
+      try {
+        if (typeof require === "function") {
+          const zlib = require("zlib");
+          return zlib.deflateRawSync(Buffer.from(text, "utf8")).length * 8;
+        }
+      } catch (_) {}
+      // Fallback: UTF-8 bits if zlib isn't directly imported in browser sandbox
+      return new TextEncoder().encode(text).length * 8;
+    }
+
+    function compareAllEncodings(text) {
+      const str = String(text || "");
+      const utf8Bits = new TextEncoder().encode(str).length * 8;
+      const utf16Bits = Array.from(str).reduce((sum, ch) => sum + (ch.codePointAt(0) > 0xffff ? 32 : 16), 0);
+      const scsuApproxBits = estimateScsuLikeBits(str);
+      const deflateBits = estimateDeflateBits(str);
+
+      const norm = typeof computeDwleStream === "function" ? computeDwleStream(str) : { totalBits: utf8Bits, bits: [] };
+      const smart = typeof computeSmartJumpStream === "function" ? computeSmartJumpStream(str) : norm;
+
+      const normDecoded = typeof decodeDwleBits === "function" ? decodeDwleBits((norm.bits || []).join("")) : str;
+      const smartDecoded = typeof decodeDwleBits === "function" ? decodeDwleBits((smart.bits || []).join("")) : str;
+
+      return {
+        text: str,
+        utf8Bits,
+        utf16Bits,
+        scsuApproxBits,
+        deflateBits,
+        normalDwleBits: norm.totalBits,
+        normalLossless: normDecoded === str,
+        smartJumpBits: smart.totalBits,
+        smartLabel: (smart.smartMeta && smart.smartMeta.chosenLabel) || "Smart Jump",
+        smartLossless: smartDecoded === str
+      };
+    }
+
+    function renderBinaryComposer(streamObj) {
+      if (!streamObj) return;
+      const bitStr = Array.isArray(streamObj.bits) ? streamObj.bits.join("") : String(streamObj.bits || "");
+      const readLines = Array.isArray(streamObj.readLines) ? streamObj.readLines : [];
+      setComposerBits(bitStr, readLines);
+    }
+
+    function optimizeWindowJump() {
+      const sampleEl = document.getElementById("sampleText");
+      const text = sampleEl ? (sampleEl.value || "") : "";
+      const normalDwle = computeDwleStream(text);
+      const smartDwle = computeSmartJumpStream(text);
+      const utf8Bits = new TextEncoder().encode(text).length * 8;
+      const savedVsNormal = normalDwle.totalBits - smartDwle.totalBits;
+      const savedVsUtf8 = utf8Bits - smartDwle.totalBits;
+
+      const resEl = document.getElementById("resultBox");
+      if (resEl) {
+        resEl.innerHTML =
+          `<strong>Smart Jump (${smartDwle.smartMeta && smartDwle.smartMeta.chosenLabel ? smartDwle.smartMeta.chosenLabel : 'Optimized'}):</strong> ${smartDwle.totalBits} bits | ` +
+          `<strong>Normal DWLE se bachat:</strong> ${savedVsNormal} bits | ` +
+          `<strong>UTF-8 se bachat:</strong> ${savedVsUtf8} bits`;
+      }
+
+      const flowEl = document.getElementById("visualFlowBox");
+      if (flowEl) {
+        flowEl.textContent = smartDwle.flowLines.join("\n");
+      }
+      renderBinaryComposer(smartDwle);
+    }
+
+  </script>
+  <footer style="text-align:center; padding:20px 12px; margin-top:32px; font-size:0.9rem; opacity:0.85;">
+    &copy; 2026 Devendra Kumar &mdash; DWLE
+  </footer>
+
+
+
+
+<script>
+// === DWLE_LIGHT_SMART_HOOK ===
+(function() {
+  const origOpt = window.optimizeWindowJump;
+  if (typeof origOpt === "function") {
+    window.optimizeWindowJump = function() {
+      const ret = origOpt.apply(this, arguments);
+      try {
+        const textEl = document.getElementById("textInput") || [...document.querySelectorAll("textarea")].find(t => t.id !== "binaryInput");
+        const binEl = document.getElementById("binaryInput");
+const sampleEl = document.getElementById("sampleText");
+        const txt = (sampleEl && sampleEl.value) || (textEl ? textEl.value : "");
+        if (window.DWLESmartV2 && typeof window.DWLESmartV2.encodeWordTokens3x === "function") {
+          const tokRes = window.DWLESmartV2.encodeWordTokens3x(txt, 8);
+          window.__lastDwle3xResult = tokRes;
+          if (binEl && tokRes.tokens && tokRes.tokens.length > 0 && tokRes.netSavedBits > 0) {
+            const note = `\n/* 3x Tokenised (${tokRes.tokens.map(t => t.word + "x" + t.count).join(", ")}): ${tokRes.rawBits} -> ${tokRes.totalEncodedBits} bits (-${tokRes.netSavedBits}b) | exit=null */`;
+            if (!String(binEl.value || "").includes("3x Tokenised")) {
+              binEl.value = String(binEl.value || "") + note;
+            }
+          }
+        }
+        if (txt && typeof window.computeSmartJumpStream === "function") {
+          const sRes = window.computeSmartJumpStream(txt);
+          const nRes = typeof window.computeDwleStream === "function" ? window.computeDwleStream(txt) : null;
+          if (sRes && Array.isArray(sRes.bits) && binEl) {
+            const smartBitsStr = sRes.bits.join("");
+            binEl.value = smartBitsStr;
+            binEl.dispatchEvent(new Event("input", { bubbles: true }));
+            window.__dwleActiveMode = "smart";
+            window.__dwleActiveBits = smartBitsStr;
+          }
+          const btn = document.getElementById("btnSmartJump");
+          if (btn && btn.parentElement && sRes && sRes.smartMeta) {
+            let infoBox = document.getElementById("dwleSmartComboInfo");
+            if (!infoBox) {
+              infoBox = document.createElement("div");
+              infoBox.id = "dwleSmartComboInfo";
+              infoBox.style.cssText = "margin-top:6px;padding:8px 10px;border-radius:8px;background:#111827;color:#a5f3fc;font-size:12px;border:1px solid #1e293b;word-break:break-word;";
+              btn.parentElement.insertAdjacentElement("afterend", infoBox);
+            }
+            const saved = nRes ? (nRes.totalBits - sRes.totalBits) : 0;
+            const cands = Array.isArray(sRes.smartMeta.candidates)
+              ? sRes.smartMeta.candidates.map(c => `${c.label}:${c.bits}b`).join(" | ")
+              : "";
+            infoBox.textContent = `Method: ${sRes.smartMeta.chosenLabel} | Smart: ${sRes.totalBits}b | Bachat: ${saved}b` + (cands ? ` | ${cands}` : "");
+          }
+        }
+      } catch (_) {}
+      return ret;
+    };
+  }
+})();
+</script>
+
+
+
+
+
+<script>
+// === DWLE_SMART_COMPOSER_FIX ===
+(function() {
+  function syncSmartToComposer() {
+    try {
+      const sampleEl = document.getElementById("sampleText");
+      const binEl = document.getElementById("binaryInput");
+      const txt = sampleEl ? (sampleEl.value || "") : "";
+      if (!txt || typeof computeSmartJumpStream !== "function") return;
+
+      const sRes = computeSmartJumpStream(txt);
+      if (!sRes || !Array.isArray(sRes.bits)) return;
+
+      const smartBits = sRes.bits.join("");
+      if (binEl) {
+        binEl.value = smartBits;
+        binEl.dispatchEvent(new Event("input", { bubbles: true }));
+        binEl.dispatchEvent(new Event("change", { bubbles: true }));
+      }
+      if (typeof renderBinaryComposer === "function") {
+        try { renderBinaryComposer(sRes); } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  document.addEventListener("DOMContentLoaded", function() {
+    const btn = document.getElementById("btnSmartJump");
+    if (btn) {
+      btn.addEventListener("click", function() {
+        setTimeout(syncSmartToComposer, 30);
+        setTimeout(syncSmartToComposer, 150);
+      });
+    }
+  });
+})();
+
+    window.addEventListener("DOMContentLoaded", function () {
+      try {
+        const ta = document.getElementById("sampleText");
+        if (ta && ta.value && typeof showAllMethodsComparison === "function") {
+          showAllMethodsComparison();
+        }
+      } catch (_) {}
+    });
+
+    window.addEventListener("DOMContentLoaded", function () {
+      const ta = document.getElementById("sampleText");
+      if (!ta) return;
+      const syncNow = () => {
+        const txt = ta.value || "";
+        let dBits = 0;
+        try {
+          if (typeof computeDwleStream === "function") dBits = computeDwleStream(txt).totalBits;
+        } catch (_) {}
+        if (typeof renderCompareCard === "function") renderCompareCard(txt, dBits);
+      };
+      ta.addEventListener("input", syncNow);
+      ta.addEventListener("keyup", syncNow);
+      ta.addEventListener("change", syncNow);
+      syncNow();
+    });
+
+
+    window.addEventListener("DOMContentLoaded", function () {
+      ["sampleText", "modalLiveComposer"].forEach(function (id) {
+        const el = document.getElementById(id);
+        if (!el) return;
+        const bringUp = function () {
+          setTimeout(function () {
+            try { el.scrollIntoView({ behavior: "smooth", block: "start" }); } catch (_) {}
+          }, 120);
+        };
+        el.addEventListener("focus", bringUp);
+        el.addEventListener("click", bringUp);
+      });
+    });
+
+</script>
+
+
+  <div id="fullMethodsModal" style="display:none; position:fixed; inset:0; background:rgba(2,6,23,0.92); z-index:9999; overflow:auto; padding:20px;">
+    <div style="max-width:960px; margin:0 auto; background:#0f172a; color:#e2e8f0; border:1px solid #334155; border-radius:12px; padding:20px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:14px;">
+        <div>
+          <h2 style="margin:0; font-size:1.2rem; color:#38bdf8;">DWLE Full Methods Comparison (DWLE Top -> Custom/New -> Popular)</h2>
+          <div id="fullMethodsSubtitle" style="font-size:0.85rem; color:#94a3b8; margin-top:4px;">Live analysis of current text across all methods</div>
+          <div id="fullMethodsLangCount" style="font-size:0.82rem; color:#93c5fd; margin-top:2px;"></div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button type="button" onclick="clearFromFullMethods()" style="background:#b45309;color:#fff;border:none;padding:8px 12px;border-radius:6px;cursor:pointer;font-weight:600;">Delete Text</button>
+          <button type="button" onclick="closeFullMethodsPage()" style="background:#dc2626;color:#fff;border:none;padding:8px 14px;border-radius:6px;cursor:pointer;font-weight:600;">Close Page</button>
+        </div>
+      </div>
+      <div style="margin-bottom:14px;">
+        <label for="modalLiveComposer" style="display:block; font-size:0.82rem; color:#94a3b8; margin-bottom:4px;">Live 2-Line Composer (type or delete here to update all methods live):</label>
+        <textarea id="modalLiveComposer" rows="2" oninput="syncFromModalComposer(this.value)" placeholder="Yahan likho ya delete karo..." style="width:100%; box-sizing:border-box; min-height:54px; max-height:78px; background:#020617; color:#f8fafc; border:1px solid #475569; border-radius:8px; padding:8px;"></textarea>
+      </div>
+      <div id="fullMethodsBody"></div>
+    </div>
+  </div>
+
+
+<script>
+// DWLE v2026.11 Smart Default (Token 15) + W8 Default Word Tokeniser + Mode A/B (null = exit) + Strict Profit Guard
+(function () {
+  const DWLE_TOKEN_15 = 15;
+  const DWLE_MAX_5BIT_WIN = 31;
+  const DWLE_CLOSE_11_0010 = "000010110010"; // Slot 11 (8-bit) + 0010 close marker
+  const DWLE_NULL_EXIT = "00000000";       // null acts strictly as exit marker inside tokenised stream
+
+  function encode5BitWindow(winNum) {
+    const clamped = Math.max(0, Math.min(DWLE_MAX_5BIT_WIN, Number(winNum) || 0));
+    return clamped.toString(2).padStart(5, "0");
+  }
+
+  function decode5BitWindow(bitStr, offset = 0) {
+    const slice = String(bitStr || "").slice(offset, offset + 5);
+    if (slice.length < 5) return { win: 8, nextOffset: offset };
+    return { win: parseInt(slice, 2), nextOffset: offset + 5 };
+  }
+
+  function buildSmartDefault15Frame(winNum, payloadBits, closeDefault = true) {
+    const tok15Bits = DWLE_TOKEN_15.toString(2).padStart(8, "0");
+    const win5Bits = encode5BitWindow(winNum);
+    const closeBits = closeDefault ? DWLE_CLOSE_11_0010 : "";
+    return tok15Bits + win5Bits + String(payloadBits || "") + closeBits;
+  }
+
+  // Encodes a single step/value in [0 + modeA/B + (1-10) + (11-15)] structure
+  function encodeModeABSlot(val, modeB = false, slotWidth = 4) {
+    const modeBit = modeB ? "1" : "0";
+    const n = Number(val) || 0;
+    const mapped = n <= 10 ? Math.max(1, n) : (11 + ((n - 11) % 5));
+    const slotBits = mapped.toString(2).padStart(slotWidth, "0");
+    return "0" + modeBit + slotBits;
+  }
+
+  // Builds a tokenised block: [0 + modeA/B + (1-10) + (11-15) + tokens... + null(exit)]
+  function buildModeABTokenBlock(tokenIds, modeB = false, slotWidth = 4) {
+    const ids = Array.isArray(tokenIds) ? tokenIds : [tokenIds];
+    let stream = "";
+    for (let i = 0; i < ids.length; i++) {
+      const useModeB = i === 0 ? Boolean(modeB) : !Boolean(modeB);
+      stream += encodeModeABSlot(ids[i], useModeB, slotWidth);
+    }
+    return stream + DWLE_NULL_EXIT;
+  }
+
+  function utf8BitLen(str) {
+    if (typeof TextEncoder !== "undefined") {
+      return new TextEncoder().encode(String(str || "")).length * 8;
+    }
+    return Buffer.byteLength(String(str || ""), "utf8") * 8;
+  }
+
+  // 3x repeat word tokeniser supporting Hindi/Unicode & ASCII words,
+  // trying W8 (8-bit default) word encoding + Mode A/B + null-exit with strict profit guard.
+  function encodeWordTokens3x(text, defaultWinBits = 8, slotWidth = 4) {
+    const str = String(text || "");
+    const wordRegex = /[\p{L}\p{M}\p{N}_]+/gu;
+    const words = str.match(wordRegex) || [];
+    const freq = new Map();
+    for (const w of words) freq.set(w, (freq.get(w) || 0) + 1);
+
+    const candidates = [...freq.entries()]
+      .filter(([w, c]) => c >= 3 && Array.from(w).length >= 2)
+      .sort((a, b) => Array.from(b[0]).length - Array.from(a[0]).length);
+
+    let working = str;
+    const tokens = [];
+    let tokenId = 1;
+
+    const w8DefCharBits = 8;
+
+    for (const [word] of candidates) {
+      let actualCount = 0;
+      let pos = 0;
+      while ((pos = working.indexOf(word, pos)) !== -1) {
+        actualCount++;
+        pos += word.length;
+      }
+      if (actualCount < 3) continue;
+
+      const charCount = Array.from(word).length;
+      const rawUtf8WordBits = utf8BitLen(word);
+      const rawTotalBits = actualCount * rawUtf8WordBits;
+
+      const modeB = tokenId % 2 === 0;
+      const singleRefBits = encodeModeABSlot(tokenId, modeB, slotWidth).length;
+
+      // Option 1: W8 default window word token definition + Mode A/B refs + null exit
+      const w8DefBits = 2 + (charCount * w8DefCharBits) + DWLE_NULL_EXIT.length;
+      const w8TotalCost = w8DefBits + (actualCount * singleRefBits) + DWLE_NULL_EXIT.length;
+
+      // Option 2: Native/UTF-8 word definition + Mode A/B refs + null exit
+      const nativeDefBits = 2 + rawUtf8WordBits + DWLE_NULL_EXIT.length;
+      const nativeTotalCost = nativeDefBits + (actualCount * singleRefBits) + DWLE_NULL_EXIT.length;
+
+      const bestCost = Math.min(w8TotalCost, nativeTotalCost);
+      const usedW8Default = w8TotalCost <= nativeTotalCost;
+
+      if (bestCost < rawTotalBits) {
+        const marker = `[[T${tokenId}]]`;
+        working = working.split(word).join(marker);
+        tokens.push({
+          id: tokenId,
+          word,
+          count: actualCount,
+          mode: modeB ? "B" : "A",
+          windowMode: usedW8Default ? "W8-default" : "native-default",
+          rawTotalBits,
+          tokenisedTotalBits: bestCost,
+          savedBits: rawTotalBits - bestCost,
+          blockBits: buildModeABTokenBlock(Array(actualCount).fill(tokenId), modeB, slotWidth)
+        });
+        tokenId++;
+      }
+    }
+
+    let baseText = working;
+    for (const t of tokens) {
+      baseText = baseText.split(`[[T${t.id}]]`).join("");
+    }
+
+    const nonTokenBits = utf8BitLen(baseText);
+    const tokensCost = tokens.reduce((acc, t) => acc + t.tokenisedTotalBits, 0);
+    const totalEncodedBits = nonTokenBits + tokensCost;
+    const rawBits = utf8BitLen(str);
+    const netSavedBits = Math.max(0, rawBits - totalEncodedBits);
+
+    const smartDefaultFrame = netSavedBits > 0
+      ? buildSmartDefault15Frame(8, tokens.map(t => t.blockBits).join(""), true)
+      : "";
+
+    return {
+      text: str,
+      defaultWindow: "W8",
+      rawBits,
+      totalEncodedBits: netSavedBits > 0 ? totalEncodedBits : rawBits,
+      netSavedBits,
+      smartDefaultFrameBits: smartDefaultFrame.length,
+      tokens,
+      tokenizedPreview: working
+    };
+  }
+
+  function applyStrictProfitGuard(rawBitsLen, candidateBitsStr) {
+    const cand = String(candidateBitsStr || "");
+    if (!cand || cand.length >= rawBitsLen) {
+      return { usedCompressed: false, bitsLength: rawBitsLen, savedBits: 0 };
+    }
+    return {
+      usedCompressed: true,
+      bitsLength: cand.length,
+      savedBits: rawBitsLen - cand.length,
+      bits: cand
+    };
+  }
+
+  window.DWLESmartV2 = {
+    TOKEN_15: DWLE_TOKEN_15,
+    MAX_5BIT_WIN: DWLE_MAX_5BIT_WIN,
+    CLOSE_MARKER: DWLE_CLOSE_11_0010,
+    NULL_EXIT: DWLE_NULL_EXIT,
+    encode5BitWindow,
+    decode5BitWindow,
+    buildSmartDefault15Frame,
+    encodeModeABSlot,
+    buildModeABTokenBlock,
+    encodeWordTokens3x,
+    applyStrictProfitGuard
+  };
+})();
+</script>
+
+
+<script>
+window.DWLESmartV3 = (function () {
+  function getWin(ch) {
+    const cp = ch.codePointAt(0);
+    if (cp <= 0x7f) return { id: "W8", width: 8, sw: 4 };
+    if (cp >= 0x0900 && cp <= 0x097f) return { id: "W9_HI", width: 9, sw: 5 };
+    if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3000 && cp <= 0x303f) || (cp >= 0xff00 && cp <= 0xffef)) {
+      return { id: "W10_CJK", width: 10, sw: 5 };
+    }
+    return { id: "W12_UNI", width: 12, sw: 6 };
+  }
+
+  function windowJumpBits(text) {
+    let bits = 0, cur = null;
+    for (const ch of Array.from(text)) {
+      const w = getWin(ch);
+      if (cur !== w.id) {
+        if (cur !== null) bits += w.sw;
+        cur = w.id;
+      }
+      bits += w.width;
+    }
+    return bits;
+  }
+
+  // Length group: 3..11 -> 1..9, 12+ -> 0 (default overflow group)
+  function lengthGroup(len) {
+    if (len >= 3 && len <= 11) return len - 2;
+    return 0;
+  }
+
+  function tierRefBits(groupCountSoFar) {
+    if (groupCountSoFar < 9) return 4;      // 1-9 tier
+    if (groupCountSoFar < 99) return 7;     // 10-99 tier
+    if (groupCountSoFar < 999) return 10;   // 100-999 tier
+    return 14;
+  }
+
+  function minRepeat(len, groupCountSoFar) {
+    const penalty = groupCountSoFar >= 100 ? 1 : 0;
+    if (len <= 3) return 4 + penalty;
+    if (len === 4) return 3 + penalty;
+    if (len === 5 || len === 6) return 3;
+    return 2; // 7+ chars: minimum 2 occurrences
+  }
+
+  function compressEstimate(text) {
+    const rawBits = Buffer.byteLength(text, "utf8") * 8;
+    const baseJumpBits = windowJumpBits(text);
+
+    // Check longest non-overlapping repeated phrase (>= 7 chars)
+    let bestPhraseSaved = 0;
+    let bestPhrase = null;
+    const maxSub = Math.min(180, Math.floor(text.length / 2));
+    for (let subLen = maxSub; subLen >= 7; subLen -= 1) {
+      const posMap = new Map();
+      for (let i = 0; i <= text.length - subLen; i++) {
+        const sub = text.slice(i, i + subLen);
+        const arr = posMap.get(sub) || [];
+        if (arr.length === 0 || i >= arr[arr.length - 1] + subLen) {
+          arr.push(i);
+          posMap.set(sub, arr);
+        }
+      }
+      for (const [sub, arr] of posMap.entries()) {
+        if (arr.length < 2) continue;
+        const subBits = windowJumpBits(sub);
+        const gross = arr.length * subBits;
+        const cost = subBits + 10 + arr.length * 5;
+        if (gross - cost > bestPhraseSaved) {
+          bestPhraseSaved = gross - cost;
+          bestPhrase = sub;
+        }
+      }
+    }
+
+    let residual = text;
+    if (bestPhrase) {
+      const firstPos = text.indexOf(bestPhrase);
+      residual = text.slice(0, firstPos + bestPhrase.length) +
+        text.slice(firstPos + bestPhrase.length).split(bestPhrase).join(" ");
+    }
+
+    const words = residual.match(/[\p{L}\p{M}\p{N}_]+/gu) || [];
+    const freq = new Map();
+    for (const w of words) freq.set(w, (freq.get(w) || 0) + 1);
+
+    const groupCounts = new Map();
+    let wordSaved = 0;
+    const tokens = [];
+
+    const candidates = [...freq.entries()]
+      .filter(([w, c]) => Array.from(w).length >= 3 && c >= 2)
+      .sort((a, b) => Array.from(b[0]).length - Array.from(a[0]).length || b[1] - a[1]);
+
+    for (const [word, count] of candidates) {
+      const chars = Array.from(word);
+      const len = chars.length;
+      const grp = lengthGroup(len);
+      const grpUsed = groupCounts.get(grp) || 0;
+      if (count < minRepeat(len, grpUsed)) continue;
+
+      const refW = tierRefBits(grpUsed);
+      const wordWinBits = chars.reduce((s, c) => s + getWin(c).width, 0);
+      const rawW = count * wordWinBits;
+      const costW = wordWinBits + 6 + count * refW;
+      if (costW < rawW) {
+        const saved = rawW - costW;
+        wordSaved += saved;
+        groupCounts.set(grp, grpUsed + 1);
+        tokens.push({ word, len, group: grp, count, refW, saved });
+      }
+    }
+
+    const totalBits = Math.max(0, baseJumpBits - bestPhraseSaved - wordSaved);
+    return { rawBits, baseJumpBits, totalBits, bestPhraseSaved, wordSaved, tokens };
+  }
+
+  return { getWin, windowJumpBits, lengthGroup, compressEstimate };
+})();
+</script>
+
+
+<script>
+window.DWLEAutoAgent = (function () {
+  function scriptBlockId(cp) {
+    if (cp <= 0x7f) return "ASCII";
+    if (cp >= 0x0900 && cp <= 0x097f) return "DEVANAGARI";
+    if (cp >= 0x0980 && cp <= 0x09ff) return "BENGALI_AS";
+    if (cp >= 0x0a00 && cp <= 0x0a7f) return "GURMUKHI";
+    if (cp >= 0x0a80 && cp <= 0x0aff) return "GUJARATI";
+    if (cp >= 0x0b00 && cp <= 0x0b7f) return "ODIA";
+    if (cp >= 0x0b80 && cp <= 0x0bff) return "TAMIL";
+    if (cp >= 0x0c00 && cp <= 0x0c7f) return "TELUGU";
+    if (cp >= 0x0c80 && cp <= 0x0cff) return "KANNADA";
+    if (cp >= 0x0d00 && cp <= 0x0d7f) return "MALAYALAM";
+    if (cp >= 0x0600 && cp <= 0x06ff) return "ARABIC_U_S";
+    if (cp >= 0xabc0 && cp <= 0xabff) return "MEETEI";
+    if (cp >= 0x1c50 && cp <= 0x1c7f) return "OL_CHIKI";
+    if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3000 && cp <= 0x303f) || (cp >= 0xff00 && cp <= 0xffef)) {
+      return "CJK";
+    }
+    return "OTHER";
+  }
+
+  // Smart Default (Token 15 -> 13-bit lang + 5-bit window 1..31 -> 8-bit script default, 10-bit CJK, 12-bit OTHER)
+  function smartDefaultWindowBits(text) {
+    const chars = Array.from(text);
+    if (!chars.length) return 0;
+
+    const counts = new Map();
+    for (const ch of chars) {
+      const blk = scriptBlockId(ch.codePointAt(0));
+      if (blk !== "ASCII") counts.set(blk, (counts.get(blk) || 0) + 1);
+    }
+
+    const defBlk = counts.size > 0
+      ? [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+      : "ASCII";
+
+    let bits = 26;
+    let curBlk = defBlk;
+    for (const ch of chars) {
+      const cp = ch.codePointAt(0);
+      const blk = scriptBlockId(cp);
+      if (blk !== curBlk) {
+        bits += 4;
+        curBlk = blk;
+      }
+      if (blk === "CJK") bits += 10;
+      else if (blk === "OTHER") bits += 12;
+      else bits += 8;
+    }
+    return bits;
+  }
+
+  function encodeLossless(text) {
+    const bytes = new TextEncoder().encode(text);
+    let bits = bytes.length.toString(2).padStart(24, "0");
+    for (const b of bytes) bits += b.toString(2).padStart(8, "0");
+    return bits;
+  }
+
+  function decodeLossless(bits) {
+    if (!bits || bits.length < 24) return "";
+    const len = parseInt(bits.slice(0, 24), 2);
+    const bytes = new Uint8Array(len);
+    let pos = 24;
+    for (let i = 0; i < len; i++) {
+      bytes[i] = parseInt(bits.slice(pos, pos + 8), 2);
+      pos += 8;
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  function evaluateAll(text) {
+    const rawBits = new TextEncoder().encode(text).length * 8;
+    const v3 = window.DWLESmartV3 ? window.DWLESmartV3.compressEstimate(text) : null;
+    const v3Bits = v3 ? v3.totalBits : rawBits;
+    const sdWinBits = smartDefaultWindowBits(text);
+    const tokenPhraseSaved = v3 ? Math.max(0, v3.baseJumpBits - v3.totalBits) : 0;
+    const sdPlusTokensBits = Math.max(0, sdWinBits - tokenPhraseSaved);
+
+    const candidates = [
+      { id: "v3", method: "DWLE-SmartV3 (Tier+Repeat)", bits: v3Bits },
+      { id: "sd", method: "DWLE-SmartDefault (W13+5)", bits: sdWinBits },
+      { id: "sd_v3", method: "SmartDefault + V3 Tokens", bits: sdPlusTokensBits }
+    ].sort((a, b) => a.bits - b.bits);
+
+    const winner = candidates[0];
+    const savedVsUtf8 = rawBits - winner.bits;
+    const savedPct = rawBits > 0 ? ((savedVsUtf8 / rawBits) * 100).toFixed(1) : "0.0";
+    const bitstream = encodeLossless(text);
+
+    return {
+      rawBits,
+      selectedMethod: winner.method,
+      estimatedBits: winner.bits,
+      savedVsUtf8,
+      savedPct: Number(savedPct),
+      allOptions: candidates,
+      v3Breakdown: v3,
+      bitstream,
+      decoded: decodeLossless(bitstream)
+    };
+  }
+
+  return {
+    selectBest: evaluateAll,
+    evaluateAll,
+    smartDefaultWindowBits,
+    encodeLossless,
+    decodeLossless
+  };
+})();
+</script>
+
+
 <style id="dwle-agent-rank-styles">
   .dwle-bit-red { color: #ff4d4f !important; font-weight: 700; }
   .dwle-bit-green { color: #22c55e !important; font-weight: 700; }
@@ -247,9 +2705,8 @@ W8 (8-bit):  [00001011 = A]</pre>
     font-size: 13px;
   }
 </style>
-
 <script id="dwle-auto-agent-core">
-window.DWLEAutoAgent = (function () {
+window.DWLEContHybrid = (function () {
   const BLOCKS = [
     { id: "ASCII", width: 7, base: 0x00, max: 0x7f },
     { id: "DEVANAGARI", width: 7, base: 0x0900, max: 0x097f },
@@ -280,70 +2737,6 @@ window.DWLEAutoAgent = (function () {
     return (n >>> 0).toString(2).padStart(w, "0");
   }
 
-  // Compact Window Stream (100% lossless)
-  function encodeCompactLossless(text) {
-    const chars = Array.from(text);
-    if (!chars.length) return pad(0, 16);
-
-    const firstCp = chars[0].codePointAt(0);
-    let curIdx = detectBlockIndex(firstCp);
-    let bits = pad(chars.length, 16) + pad(curIdx, 4);
-
-    for (const ch of chars) {
-      const cp = ch.codePointAt(0);
-      const blk = BLOCKS[curIdx];
-      if (cp >= blk.base && cp <= blk.max && (cp - blk.base) < (1 << blk.width)) {
-        bits += "0" + pad(cp - blk.base, blk.width);
-      } else {
-        const nextIdx = detectBlockIndex(cp);
-        const nextBlk = BLOCKS[nextIdx];
-        if (cp >= nextBlk.base && cp <= nextBlk.max && (cp - nextBlk.base) < (1 << nextBlk.width)) {
-          curIdx = nextIdx;
-          bits += "1" + pad(curIdx, 4) + pad(cp - nextBlk.base, nextBlk.width);
-        } else {
-          curIdx = BLOCKS.length - 1;
-          bits += "1" + pad(curIdx, 4) + pad(cp, 21);
-        }
-      }
-    }
-    return bits;
-  }
-
-  function decodeCompactLossless(bits) {
-    if (!bits || bits.length < 16) return "";
-    const count = parseInt(bits.slice(0, 16), 2);
-    if (count === 0) return "";
-    let pos = 16;
-    let curIdx = parseInt(bits.slice(pos, pos + 4), 2);
-    pos += 4;
-
-    let out = "";
-    for (let i = 0; i < count && pos < bits.length; i++) {
-      const flag = bits[pos++];
-      if (flag === "0") {
-        const blk = BLOCKS[curIdx];
-        const offset = parseInt(bits.slice(pos, pos + blk.width), 2);
-        pos += blk.width;
-        out += String.fromCodePoint(blk.base + offset);
-      } else {
-        curIdx = parseInt(bits.slice(pos, pos + 4), 2);
-        pos += 4;
-        const blk = BLOCKS[curIdx];
-        if (blk.id === "UNI_21") {
-          const cp = parseInt(bits.slice(pos, pos + 21), 2);
-          pos += 21;
-          out += String.fromCodePoint(cp);
-        } else {
-          const offset = parseInt(bits.slice(pos, pos + blk.width), 2);
-          pos += blk.width;
-          out += String.fromCodePoint(blk.base + offset);
-        }
-      }
-    }
-    return out;
-  }
-
-  // Continuous Window + Backref (len >= 5 -> '11' + 12-bit offset + 6-bit len-5)
   function encodeContHybrid(text) {
     const chars = Array.from(text);
     if (!chars.length) return { bits: pad(0, 20), matches: 0 };
@@ -437,92 +2830,9 @@ window.DWLEAutoAgent = (function () {
     return out.join("");
   }
 
-  function smartDefaultWindowBits(text) {
-    const chars = Array.from(text);
-    if (!chars.length) return 0;
-
-    const counts = new Map();
-    for (const ch of chars) {
-      const idx = detectBlockIndex(ch.codePointAt(0));
-      const id = BLOCKS[idx].id;
-      if (id !== "ASCII") counts.set(id, (counts.get(id) || 0) + 1);
-    }
-
-    const defId = counts.size > 0
-      ? [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0]
-      : "ASCII";
-
-    let bits = 26;
-    let curId = defId;
-    for (const ch of chars) {
-      const cp = ch.codePointAt(0);
-      const idx = detectBlockIndex(cp);
-      const id = BLOCKS[idx].id;
-      if (id !== curId) {
-        bits += 4;
-        curId = id;
-      }
-      if (id === "CJK_MAIN") bits += 10;
-      else if (id === "UNI_21") bits += 12;
-      else bits += 8;
-    }
-    return bits;
-  }
-
-  function evaluateAll(text) {
-    const rawBits = new TextEncoder().encode(text).length * 8;
-    const v3 = window.DWLESmartV3 ? window.DWLESmartV3.compressEstimate(text) : null;
-    const v3Bits = v3 ? v3.totalBits : rawBits;
-    const sdWinBits = smartDefaultWindowBits(text);
-    const tokenPhraseSaved = v3 ? Math.max(0, v3.baseJumpBits - v3.totalBits) : 0;
-    const sdPlusTokensBits = Math.max(0, sdWinBits - tokenPhraseSaved);
-
-    const compactStream = encodeCompactLossless(text);
-    const contHybrid = encodeContHybrid(text);
-    const useCont = contHybrid.bits.length < compactStream.length;
-    const activeStream = useCont ? contHybrid.bits : compactStream;
-    const decoded = useCont ? decodeContHybrid(activeStream) : decodeCompactLossless(activeStream);
-
-    const candidates = [
-      { id: "cont_hybrid", method: "DWLE-ContHybrid (Window+Backref)", bits: contHybrid.bits.length },
-      { id: "compact", method: "Compact Window Stream (Lossless)", bits: compactStream.length },
-      { id: "v3", method: "DWLE-SmartV3 (Tier+Repeat)", bits: v3Bits },
-      { id: "sd", method: "DWLE-SmartDefault (W13+5)", bits: sdWinBits },
-      { id: "sd_v3", method: "SmartDefault + V3 Tokens", bits: sdPlusTokensBits }
-    ].sort((a, b) => a.bits - b.bits);
-
-    const winner = candidates[0];
-    const savedVsUtf8 = rawBits - winner.bits;
-    const savedPct = rawBits > 0 ? ((savedVsUtf8 / rawBits) * 100).toFixed(1) : "0.0";
-
-    return {
-      rawBits,
-      selectedMethod: winner.method,
-      estimatedBits: winner.bits,
-      savedVsUtf8,
-      savedPct: Number(savedPct),
-      allOptions: candidates,
-      v3Breakdown: v3,
-      matches5Plus: contHybrid.matches,
-      bitstream: activeStream,
-      decoded
-    };
-  }
-
-  return {
-    selectBest: evaluateAll,
-    evaluateAll,
-    smartDefaultWindowBits,
-    encodeCompactLossless,
-    decodeCompactLossless,
-    encodeContHybrid,
-    decodeContHybrid,
-    encodeLossless: (txt) => encodeContHybrid(txt).bits,
-    decodeLossless: decodeContHybrid
-  };
+  return { encodeContHybrid, decodeContHybrid };
 })();
 </script>
-
 <script id="dwle-agent-rank-sync">
 (function () {
   function parseBits(text) {
@@ -541,22 +2851,18 @@ window.DWLEAutoAgent = (function () {
     return "Low (High Bits)";
   }
 
-  function applyColorByOrder(el, bits, minBits, secondDistinctBits) {
-    if (!el) return;
-    el.classList.remove("dwle-bit-red", "dwle-bit-green", "dwle-bit-default");
-    el.style.removeProperty("color");
-    if (bits === minBits) {
-      el.classList.add("dwle-bit-default");
-    } else if (secondDistinctBits !== null && bits === secondDistinctBits) {
-      el.classList.add("dwle-bit-green");
-      el.style.setProperty("color", "#22c55e", "important");
-    } else {
-      el.classList.add("dwle-bit-red");
-      el.style.setProperty("color", "#ff4d4f", "important");
-    }
+  // Only rank & color-code comparison tables inside modal/overlay/secondary comparison views
+  function isSecondaryComparisonTable(table) {
+    const headersText = table.textContent || "";
+    const hasMethodsCol = /method/i.test(headersText) && /bits?/i.test(headersText);
+    const inModalOrPage = Boolean(
+      table.closest(".modal, [role='dialog'], [id*='modal' i], [id*='page' i], [id*='compare' i], [class*='modal' i], [class*='compare' i]")
+    );
+    return hasMethodsCol || inModalOrPage;
   }
 
-  function processTable(table) {
+  function processSecondaryTable(table) {
+    if (!isSecondaryComparisonTable(table)) return;
     const tbody = table.tBodies[0] || table;
     const rows = Array.from(tbody.querySelectorAll("tr")).filter((tr) => {
       if (tr.querySelector("th")) return false;
@@ -582,7 +2888,6 @@ window.DWLEAutoAgent = (function () {
 
     if (items.length < 2) return;
 
-    // Sort by bits ascending (lowest bits = rank 1)
     items.sort((a, b) => (a.bits - b.bits) || (a.origIdx - b.origIdx));
 
     let rank = 1;
@@ -616,89 +2921,36 @@ window.DWLEAutoAgent = (function () {
       }
 
       const bitCell = tds[bitColIdx];
-      applyColorByOrder(bitCell, bits, minBits, secondDistinctBits);
-
-      // Convert cyan highlights to red when worse than best
-      tr.querySelectorAll("*").forEach((el) => {
-        const styleAttr = (el.getAttribute("style") || "").toLowerCase();
-        const cls = (el.className || "").toString().toLowerCase();
-        if (styleAttr.includes("cyan") || styleAttr.includes("0ff") || cls.includes("cyan")) {
-          if (bits > minBits) {
-            el.style.setProperty("color", "#ff4d4f", "important");
-          } else {
-            el.style.removeProperty("color");
-          }
+      if (bitCell) {
+        bitCell.classList.remove("dwle-bit-red", "dwle-bit-green", "dwle-bit-default");
+        bitCell.style.removeProperty("color");
+        if (bits === minBits) {
+          bitCell.classList.add("dwle-bit-default");
+        } else if (secondDistinctBits !== null && bits === secondDistinctBits) {
+          bitCell.classList.add("dwle-bit-green");
+          bitCell.style.setProperty("color", "#22c55e", "important");
+        } else {
+          bitCell.classList.add("dwle-bit-red");
+          bitCell.style.setProperty("color", "#ff4d4f", "important");
         }
-      });
+      }
 
       tbody.appendChild(tr);
     });
   }
 
-  function processFormatStrip() {
-    // Handle non-table format comparison cards/strips on main page
-    const candidates = Array.from(document.querySelectorAll("div, section"));
-    candidates.forEach((box) => {
-      if (box.closest("table")) return;
-      const text = box.textContent || "";
-      if (!/UTF-8/i.test(text) || !/DEFLATE/i.test(text) || !/DWLE/i.test(text)) return;
-      if (text.length > 600) return;
-
-      const bitNodes = Array.from(box.querySelectorAll("*")).filter((el) => {
-        if (el.children.length > 0) return false;
-        return /^\d+\s*b$/i.test((el.textContent || "").trim());
-      });
-      if (bitNodes.length < 3) return;
-
-      const parsed = bitNodes.map((el) => ({
-        el,
-        bits: parseBits(el.textContent)
-      })).filter((x) => x.bits !== null);
-
-      if (parsed.length < 3) return;
-      const sorted = [...parsed].sort((a, b) => a.bits - b.bits);
-      const minBits = sorted[0].bits;
-      const secondDistinct = sorted.find((x) => x.bits > minBits);
-      const secondDistinctBits = secondDistinct ? secondDistinct.bits : null;
-
-      parsed.forEach(({ el, bits }) => {
-        applyColorByOrder(el, bits, minBits, secondDistinctBits);
-      });
-    });
-  }
-
-  function syncAll() {
-    const textarea = document.querySelector("textarea");
-    const text = textarea ? textarea.value : "";
-    let statusBox = document.getElementById("dwle-live-agent-status");
-    if (!statusBox && textarea && textarea.parentElement) {
-      statusBox = document.createElement("div");
-      statusBox.id = "dwle-live-agent-status";
-      statusBox.className = "dwle-agent-banner";
-      textarea.parentElement.insertBefore(statusBox, textarea.nextSibling);
-    }
-    if (statusBox && window.DWLEAutoAgent && text.trim().length > 0) {
-      const res = window.DWLEAutoAgent.evaluateAll(text);
-      statusBox.innerHTML =
-        "<strong>Auto Agent:</strong> " + res.selectedMethod +
-        " | <strong>Est:</strong> " + res.estimatedBits + "b" +
-        " | <strong>Stream:</strong> " + res.bitstream.length + "b" +
-        " | <strong>Bachat (vs UTF-8):</strong> " + res.savedVsUtf8 + "b (" + res.savedPct + "%)" +
-        " | <strong>Lossless:</strong> " + (res.decoded === text ? "OK" : "CHECK");
-    }
-
-    document.querySelectorAll("table").forEach(processTable);
-    processFormatStrip();
+  function syncSecondaryViews() {
+    document.querySelectorAll("table").forEach(processSecondaryTable);
   }
 
   if (typeof MutationObserver !== "undefined") {
     const observer = new MutationObserver(() => {
       clearTimeout(window.__dwleSyncTimer);
-      window.__dwleSyncTimer = setTimeout(syncAll, 50);
+      window.__dwleSyncTimer = setTimeout(syncSecondaryViews, 50);
     });
     if (typeof window !== "undefined" && window.addEventListener) {
       window.addEventListener("DOMContentLoaded", () => {
-        syncAll();
+        syncSecondaryViews();
         if (document.body) {
           observer.observe(document.body, {
             childList: true,
@@ -711,8 +2963,7 @@ window.DWLEAutoAgent = (function () {
     }
   }
   if (typeof document !== "undefined" && document.addEventListener) {
-    document.addEventListener("input", () => setTimeout(syncAll, 40));
-    document.addEventListener("click", () => setTimeout(syncAll, 100));
+    document.addEventListener("click", () => setTimeout(syncSecondaryViews, 100));
   }
 })();
 </script>
