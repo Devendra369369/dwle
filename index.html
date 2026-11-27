@@ -672,7 +672,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           } else {
             emitToken(0, curW, `${curW}null(WinTrig)`, `null:WinTrig`);
             for (const item of buildControlSequence(targetW, curW)) {
-              emitToken(item.val, curW, `${curW}wTarget=${item.desc}->W${targetW}`, `W${targetW}`);
+              emitToken(item.val, curW, `${item.desc}->W${targetW}`, `W${targetW}`);
             }
             flowLines.push(`Switch W${curW} -> W${targetW} at ${idxLabel} [${ch}]`);
             curW = targetW; curL = 1;
@@ -1745,7 +1745,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           const seq = buildControlSequence(targetW, curW);
           for (const item of seq) {
             for (const c of item.bits) bits.push(Number(c));
-            readLines.push(`${item.bits}=${curW}wTarget=${item.desc}->W${targetW}`);
+            readLines.push(`${item.bits}=${item.desc}->W${targetW}`);
             tokenSegments.push({ bits: item.bits, label: `W${targetW}` });
           }
           curW = targetW;
