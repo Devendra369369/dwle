@@ -1313,21 +1313,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       if (modal) modal.style.display = "none";
     }
 
-    function showAllMethodsComparison() {
-      const ta = document.getElementById("sampleText");
-      const txt = ta ? ta.value : "";
-      let dwBits = 0;
-      try {
-        if (typeof computeDwleStream === "function") {
-          dwBits = computeDwleStream(txt).totalBits;
-        }
-      } catch (_) {}
-      renderCompareCard(txt, dwBits);
-      const card = document.getElementById("compareCard");
-      if (card && typeof card.scrollIntoView === "function") {
-        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
-      }
-    }
+    function showAllMethodsComparison() { const ta = document.getElementById("sampleText"); const txt = ta ? (ta.value || "") : ""; let dwBits = 0; try { if (typeof computeDwleStream === "function") dwBits = computeDwleStream(txt).totalBits; } catch (_) {} renderCompareCard(txt, dwBits); const card = document.getElementById("compareCard"); if (card) { card.style.display = "block"; card.style.outline = "2px solid #0f766e"; setTimeout(() => { card.style.outline = ""; }, 900); if (typeof card.scrollIntoView === "function") card.scrollIntoView({ behavior: "smooth", block: "nearest" }); } }
 
     function calcFreshStats(text, dwleBits) {
       const str = String(text || "");
@@ -2854,7 +2840,7 @@ window.DWLEContHybrid = (function () {
   }
 
   function getActiveText() {
-    const inputs = Array.from(document.querySelectorAll("textarea, input[type='text']"));
+    const inputs = Array.from(document.querySelectorAll("textarea, input[type='text']")).filter(e => !/^[01\s]+$/.test(e.value.trim()) && e.offsetParent !== null);
     for (const el of inputs) {
       if (el.offsetParent !== null && el.value && el.value.trim().length > 0) {
         return el.value;
@@ -3086,7 +3072,7 @@ window.DWLERuleStream = (function () {
 (function () {
   function syncRow() {
     if (!window.DWLERuleStream) return;
-    const inp = Array.from(document.querySelectorAll("textarea, input[type='text']")).find(el => el.value && el.value.trim());
+    const inp = Array.from(document.querySelectorAll("textarea, input[type='text']")).filter(e => !/^[01\s]+$/.test(e.value.trim()) && e.offsetParent !== null).find(el => el.value && el.value.trim());
     const text = inp ? inp.value : "";
     document.querySelectorAll("table").forEach(tbl => {
       if (!/saved vs utf-8/i.test(tbl.textContent || "") || !/dwle result/i.test(tbl.textContent || "")) return;
