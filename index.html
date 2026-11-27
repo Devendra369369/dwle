@@ -2834,6 +2834,7 @@ window.DWLEContHybrid = (function () {
 })();
 </script>
 
+
 <script id="dwle-agent-rank-sync">
 (function () {
   function parseBits(text) {
@@ -2867,23 +2868,24 @@ window.DWLEContHybrid = (function () {
     return "";
   }
 
-  function isSecondaryComparisonTable(table) {
-    const headersText = table.textContent || "";
-    const hasMethodsCol = /method/i.test(headersText) && /bits?/i.test(headersText);
-    const inModalOrPage = Boolean(
-      table.closest(".modal, [role='dialog'], [id*='modal' i], [id*='page' i], [id*='compare' i], [class*='modal' i], [class*='compare' i]")
-    );
-    return hasMethodsCol || inModalOrPage;
+  // Only target the Full Methods Comparison table (has "Saved vs UTF-8" and "DWLE Result" headers)
+  function isFullMethodsTable(table) {
+    const t = table.textContent || "";
+    return /saved vs utf-8/i.test(t) && /dwle result/i.test(t) && /method/i.test(t);
   }
 
   function ensureContHybridRow(table) {
     if (!window.DWLEContHybrid) return;
     const text = getActiveText();
-    if (!text) return;
-
     const tbody = table.tBodies[0] || table;
+    const existingRow = tbody.querySelector("tr[data-dwle-cont-hybrid='1']");
+    if (!text) {
+      if (existingRow) existingRow.remove();
+      return;
+    }
+
     const rows = Array.from(tbody.querySelectorAll("tr")).filter((tr) => {
-      if (tr.querySelector("th")) return false;
+      if (tr === existingRow || tr.querySelector("th")) return false;
       return tr.querySelectorAll("td").length >= 3;
     });
     if (!rows.length) return;
@@ -2894,10 +2896,8 @@ window.DWLEContHybrid = (function () {
     const savedBits = utf8Bits - contBits;
     const savedPct = utf8Bits > 0 ? ((savedBits / utf8Bits) * 100).toFixed(1) : "0.0";
 
-    const headerCells = Array.from(table.querySelectorAll("thead th, tr:first-child th"));
-    const colCount = Math.max(rows[0].children.length, headerCells.length || 5);
-
-    let row = tbody.querySelector("tr[data-dwle-cont-hybrid='1']");
+    const colCount = Math.max(rows[0].children.length, 6);
+    let row = existingRow;
     if (!row) {
       row = document.createElement("tr");
       row.setAttribute("data-dwle-cont-hybrid", "1");
@@ -2908,10 +2908,9 @@ window.DWLEContHybrid = (function () {
     }
 
     const tds = Array.from(row.children);
-    const diffVsUtf8 = utf8Bits - contBits;
-    const resultText = diffVsUtf8 >= 0
-      ? "ContHybrid beats UTF-8 by " + diffVsUtf8 + "b"
-      : "UTF-8 beats by " + Math.abs(diffVsUtf8) + "b";
+    const resultText = savedBits >= 0
+      ? "ContHybrid beats UTF-8 by " + savedBits + "b"
+      : "UTF-8 beats by " + Math.abs(savedBits) + "b";
 
     if (tds[0]) tds[0].textContent = "-";
     if (tds[1]) tds[1].textContent = "DWLE-ContHybrid (Window+Backref)";
@@ -2921,26 +2920,20 @@ window.DWLEContHybrid = (function () {
     if (tds[5]) tds[5].textContent = resultText;
   }
 
-  function processSecondaryTable(table) {
-    if (!isSecondaryComparisonTable(table)) return;
+  function processFullMethodsTable(table) {
+    if (!isFullMethodsTable(table)) return;
     ensureContHybridRow(table);
 
     const tbody = table.tBodies[0] || table;
     const rows = Array.from(tbody.querySelectorAll("tr")).filter((tr) => {
       if (tr.querySelector("th")) return false;
-      const tds = tr.querySelectorAll("td");
-      return tds.length >= 3;
+      return tr.querySelectorAll("td").length >= 4;
     });
     if (rows.length < 2) return;
 
     const headerCells = Array.from(table.querySelectorAll("thead th, tr:first-child th"));
     let bitColIdx = headerCells.findIndex((th) => /^bits?$/i.test(th.textContent.trim()));
-    if (bitColIdx === -1) bitColIdx = headerCells.findIndex((th) => /bits?/i.test(th.textContent));
-    if (bitColIdx === -1) {
-      const sampleTds = Array.from(rows[0].children);
-      bitColIdx = sampleTds.findIndex((td) => /^\d+\s*b$/i.test(td.textContent.trim()));
-      if (bitColIdx === -1) bitColIdx = 3;
-    }
+    if (bitColIdx === -1) bitColIdx = 3;
 
     const items = rows.map((tr, origIdx) => {
       const tds = Array.from(tr.children);
@@ -3001,18 +2994,23 @@ window.DWLEContHybrid = (function () {
     });
   }
 
-  function syncSecondaryViews() {
-    document.querySelectorAll("table").forEach(processSecondaryTable);
+  function syncViews() {
+    // Clean any stray ContHybrid rows outside Full Methods table
+    document.querySelectorAll("table tr[data-dwle-cont-hybrid='1']").forEach((tr) => {
+      const tbl = tr.closest("table");
+      if (!tbl || !isFullMethodsTable(tbl)) tr.remove();
+    });
+    document.querySelectorAll("table").forEach(processFullMethodsTable);
   }
 
   if (typeof MutationObserver !== "undefined") {
     const observer = new MutationObserver(() => {
       clearTimeout(window.__dwleSyncTimer);
-      window.__dwleSyncTimer = setTimeout(syncSecondaryViews, 60);
+      window.__dwleSyncTimer = setTimeout(syncViews, 60);
     });
     if (typeof window !== "undefined" && window.addEventListener) {
       window.addEventListener("DOMContentLoaded", () => {
-        syncSecondaryViews();
+        syncViews();
         if (document.body) {
           observer.observe(document.body, {
             childList: true,
@@ -3025,8 +3023,8 @@ window.DWLEContHybrid = (function () {
     }
   }
   if (typeof document !== "undefined" && document.addEventListener) {
-    document.addEventListener("input", () => setTimeout(syncSecondaryViews, 60));
-    document.addEventListener("click", () => setTimeout(syncSecondaryViews, 120));
+    document.addEventListener("input", () => setTimeout(syncViews, 60));
+    document.addEventListener("click", () => setTimeout(syncViews, 120));
   }
 })();
 </script>
