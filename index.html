@@ -532,12 +532,20 @@ W8 (8-bit):  [00001011 = A]</pre>
 
     function buildControlSequence(targetNum, w) {
       const n = Number(targetNum) || 0;
+      const lastDigit = n % 10;
+      const modeBMap = { 5: 11, 6: 12, 7: 13, 8: 14, 9: 15 };
+      if (lastDigit >= 5 && lastDigit <= 9) {
+        const mapped = modeBMap[lastDigit];
+        return [
+          { bits: "110", val: 110, desc: "modeB" },
+          { bits: mapped.toString(2).padStart(4, "0"), val: mapped, desc: mapped + "(d:" + lastDigit + ")" }
+        ];
+      }
       const stepVal = Math.max(1, n - 1);
-      const stepBits = stepVal.toString(2).padStart(4, "0");
+      const stepBits = (stepVal % 16).toString(2).padStart(4, "0");
       return [
-        { bits: "10", val: 2, desc: "modeA" },
-        { bits: stepBits, val: stepVal, desc: stepVal + "-" + "1" + "=" + Math.max(0, stepVal - 1) },
-        { bits: "1011", val: 11, desc: "11-10=1=0 modeA se" }
+        { bits: "10", val: 10, desc: "modeA" },
+        { bits: stepBits, val: stepVal, desc: stepVal + "-1=" + Math.max(0, stepVal - 1) }
       ];
     }
     function buildCompressNumberTokens(num, w) {
