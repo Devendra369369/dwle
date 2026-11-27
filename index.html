@@ -2337,7 +2337,7 @@ const sampleEl = document.getElementById("sampleText");
   // trying W8 (8-bit default) word encoding + Mode A/B + null-exit with strict profit guard.
   function encodeWordTokens3x(text, defaultWinBits = 8, slotWidth = 4) {
     const str = String(text || "");
-    const wordRegex = /[\p{L}\p{N}_]+/gu;
+    const wordRegex = /[\p{L}\p{M}\p{N}_]+/gu;
     const words = str.match(wordRegex) || [];
     const freq = new Map();
     for (const w of words) freq.set(w, (freq.get(w) || 0) + 1);
@@ -2450,6 +2450,129 @@ const sampleEl = document.getElementById("sampleText");
     encodeWordTokens3x,
     applyStrictProfitGuard
   };
+})();
+</script>
+
+
+<script>
+window.DWLESmartV3 = (function () {
+  function getWin(ch) {
+    const cp = ch.codePointAt(0);
+    if (cp <= 0x7f) return { id: "W8", width: 8, sw: 4 };
+    if (cp >= 0x0900 && cp <= 0x097f) return { id: "W9_HI", width: 9, sw: 5 };
+    if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3000 && cp <= 0x303f) || (cp >= 0xff00 && cp <= 0xffef)) {
+      return { id: "W10_CJK", width: 10, sw: 5 };
+    }
+    return { id: "W12_UNI", width: 12, sw: 6 };
+  }
+
+  function windowJumpBits(text) {
+    let bits = 0, cur = null;
+    for (const ch of Array.from(text)) {
+      const w = getWin(ch);
+      if (cur !== w.id) {
+        if (cur !== null) bits += w.sw;
+        cur = w.id;
+      }
+      bits += w.width;
+    }
+    return bits;
+  }
+
+  // Length group: 3..11 -> 1..9, 12+ -> 0 (default overflow group)
+  function lengthGroup(len) {
+    if (len >= 3 && len <= 11) return len - 2;
+    return 0;
+  }
+
+  function tierRefBits(groupCountSoFar) {
+    if (groupCountSoFar < 9) return 4;      // 1-9 tier
+    if (groupCountSoFar < 99) return 7;     // 10-99 tier
+    if (groupCountSoFar < 999) return 10;   // 100-999 tier
+    return 14;
+  }
+
+  function minRepeat(len, groupCountSoFar) {
+    const penalty = groupCountSoFar >= 100 ? 1 : 0;
+    if (len <= 3) return 4 + penalty;
+    if (len === 4) return 3 + penalty;
+    if (len === 5 || len === 6) return 3;
+    return 2; // 7+ chars: minimum 2 occurrences
+  }
+
+  function compressEstimate(text) {
+    const rawBits = Buffer.byteLength(text, "utf8") * 8;
+    const baseJumpBits = windowJumpBits(text);
+
+    // Check longest non-overlapping repeated phrase (>= 7 chars)
+    let bestPhraseSaved = 0;
+    let bestPhrase = null;
+    const maxSub = Math.min(180, Math.floor(text.length / 2));
+    for (let subLen = maxSub; subLen >= 7; subLen -= 1) {
+      const posMap = new Map();
+      for (let i = 0; i <= text.length - subLen; i++) {
+        const sub = text.slice(i, i + subLen);
+        const arr = posMap.get(sub) || [];
+        if (arr.length === 0 || i >= arr[arr.length - 1] + subLen) {
+          arr.push(i);
+          posMap.set(sub, arr);
+        }
+      }
+      for (const [sub, arr] of posMap.entries()) {
+        if (arr.length < 2) continue;
+        const subBits = windowJumpBits(sub);
+        const gross = arr.length * subBits;
+        const cost = subBits + 10 + arr.length * 5;
+        if (gross - cost > bestPhraseSaved) {
+          bestPhraseSaved = gross - cost;
+          bestPhrase = sub;
+        }
+      }
+    }
+
+    let residual = text;
+    if (bestPhrase) {
+      const firstPos = text.indexOf(bestPhrase);
+      residual = text.slice(0, firstPos + bestPhrase.length) +
+        text.slice(firstPos + bestPhrase.length).split(bestPhrase).join(" ");
+    }
+
+    const words = residual.match(/[\p{L}\p{M}\p{N}_]+/gu) || [];
+    const freq = new Map();
+    for (const w of words) freq.set(w, (freq.get(w) || 0) + 1);
+
+    const groupCounts = new Map();
+    let wordSaved = 0;
+    const tokens = [];
+
+    const candidates = [...freq.entries()]
+      .filter(([w, c]) => Array.from(w).length >= 3 && c >= 2)
+      .sort((a, b) => Array.from(b[0]).length - Array.from(a[0]).length || b[1] - a[1]);
+
+    for (const [word, count] of candidates) {
+      const chars = Array.from(word);
+      const len = chars.length;
+      const grp = lengthGroup(len);
+      const grpUsed = groupCounts.get(grp) || 0;
+      if (count < minRepeat(len, grpUsed)) continue;
+
+      const refW = tierRefBits(grpUsed);
+      const wordWinBits = chars.reduce((s, c) => s + getWin(c).width, 0);
+      const rawW = count * wordWinBits;
+      const costW = wordWinBits + 6 + count * refW;
+      if (costW < rawW) {
+        const saved = rawW - costW;
+        wordSaved += saved;
+        groupCounts.set(grp, grpUsed + 1);
+        tokens.push({ word, len, group: grp, count, refW, saved });
+      }
+    }
+
+    const totalBits = Math.max(0, baseJumpBits - bestPhraseSaved - wordSaved);
+    return { rawBits, baseJumpBits, totalBits, bestPhraseSaved, wordSaved, tokens };
+  }
+
+  return { getWin, windowJumpBits, lengthGroup, compressEstimate };
 })();
 </script>
 
