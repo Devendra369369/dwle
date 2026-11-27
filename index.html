@@ -530,7 +530,7 @@ W8 (8-bit):  [00001011 = A]</pre>
       return String.fromCodePoint(Math.max(0, Math.min(0x10FFFF, idx0)));
     }
 
-    function buildControlSequence(targetNum, w) { if (window.DWLERuleStream && typeof window.DWLERuleStream.encodeRuleStream === "function") { const h = (Number(w)||8).toString(2).padStart(8,"0"); const endTok = (window.DWLERuleStream.END_BITS || "01000011011"); return [{ bits: h + endTok, val: targetNum, desc: "RuleStream(8b+EndTok)->" + targetNum }]; }
+    function buildControlSequence(targetNum, w) { if (window.DWLERuleStream) { const h = (Number(w)||8).toString(2).padStart(8,"0"); const endTok = (window.DWLERuleStream.END_BITS || "01000011011"); const modeBits = Number(targetNum) <= 10 ? "10" : "110"; const ruleBits = h + "0" + modeBits + endTok; return [{ bits: ruleBits, val: targetNum, desc: "RuleStream(8b+EndTok)->" + targetNum }]; }
       const maxVal = (1 << w) - 1;
       const directVal = 11 + targetNum;
       if (directVal >= 19 && directVal <= maxVal) {
