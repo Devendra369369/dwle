@@ -2672,6 +2672,163 @@ window.DWLEAutoAgent = (function () {
 })();
 </script>
 
+
+<style id="dwle-agent-rank-styles">
+  .dwle-bit-red { color: #ff4d4f !important; font-weight: 700; }
+  .dwle-bit-green { color: #22c55e !important; font-weight: 700; }
+  .dwle-bit-default { color: inherit !important; }
+  .dwle-agent-banner {
+    margin: 8px 0;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(56, 189, 248, 0.35);
+    background: rgba(15, 23, 42, 0.75);
+    font-size: 13px;
+  }
+</style>
+<script id="dwle-agent-rank-sync">
+(function () {
+  function parseBits(text) {
+    const m = String(text || "").replace(/,/g, "").match(/(\d+)\s*b?\b/i);
+    return m ? parseInt(m[1], 10) : null;
+  }
+
+  function levelFromRankAndBits(rank, bits, minBits, maxBits) {
+    if (rank === 1) return "Top / Best Bits";
+    if (maxBits === minBits) return "Equal Level";
+    const ratio = (bits - minBits) / (maxBits - minBits);
+    if (ratio <= 0.25) return "High (Low Bits)";
+    if (ratio <= 0.6) return "Mid Level";
+    return "Low (High Bits)";
+  }
+
+  function applyDynamicRankingAndColors() {
+    const tables = document.querySelectorAll("table");
+    tables.forEach((table) => {
+      const tbody = table.tBodies[0] || table;
+      const rows = Array.from(tbody.querySelectorAll("tr")).filter((tr) => {
+        const hasTh = tr.querySelector("th");
+        const cells = tr.querySelectorAll("td");
+        return !hasTh && cells.length >= 3;
+      });
+      if (rows.length < 2) return;
+
+      // Detect which column holds bits
+      let bitColIdx = -1;
+      const headerCells = table.querySelectorAll("thead th, tr:first-child th");
+      headerCells.forEach((th, idx) => {
+        if (/bits?/i.test(th.textContent)) bitColIdx = idx;
+      });
+      if (bitColIdx === -1) {
+        // Fallback: pick column with 'b' suffix or numeric bit values
+        const sampleCells = Array.from(rows[0].children);
+        bitColIdx = sampleCells.findIndex((td) => /\d+\s*b\b/i.test(td.textContent));
+        if (bitColIdx === -1) bitColIdx = 2;
+      }
+
+      const items = rows.map((tr, origIdx) => {
+        const tds = Array.from(tr.children);
+        const bits = parseBits(tds[bitColIdx] ? tds[bitColIdx].textContent : "");
+        return { tr, tds, bits, origIdx };
+      }).filter((x) => x.bits !== null);
+
+      if (items.length < 2) return;
+
+      // Sort ascending by bits (lowest bits = best)
+      items.sort((a, b) => (a.bits - b.bits) || (a.origIdx - b.origIdx));
+
+      // Assign tied ranks when bits are equal
+      let currentRank = 1;
+      items.forEach((item, i) => {
+        if (i > 0 && item.bits > items[i - 1].bits) {
+          currentRank = i + 1;
+        }
+        item.rank = currentRank;
+      });
+
+      const minBits = items[0].bits;
+      const maxBits = items[items.length - 1].bits;
+      const secondDistinct = items.find((x) => x.bits > minBits);
+
+      items.forEach((item) => {
+        const { tr, tds, bits, rank } = item;
+
+        // Update # column if present
+        if (tds.length >= 2 && /^#?$/i.test((headerCells[0]?.textContent || "").trim())) {
+          tds[0].textContent = String(rank);
+        }
+
+        // Update Level column if present
+        const lvlIdx = Array.from(headerCells).findIndex((th) => /level/i.test(th.textContent));
+        if (lvlIdx !== -1 && tds[lvlIdx]) {
+          tds[lvlIdx].textContent = levelFromRankAndBits(rank, bits, minBits, maxBits);
+        }
+
+        // Color bit cell and any cyan-styled elements inside row
+        const bitCell = tds[bitColIdx];
+        if (bitCell) {
+          bitCell.classList.remove("dwle-bit-red", "dwle-bit-green", "dwle-bit-default");
+          if (bits === minBits) {
+            bitCell.classList.add("dwle-bit-default"); // #1 stays default
+          } else if (secondDistinct && bits === secondDistinct.bits) {
+            bitCell.classList.add("dwle-bit-green"); // second / runner-up in green
+          } else {
+            bitCell.classList.add("dwle-bit-red"); // higher / worse bits in red
+          }
+        }
+
+        // Convert any cyan highlights to red when worse than best
+        tr.querySelectorAll("*").forEach((el) => {
+          const styleAttr = (el.getAttribute("style") || "").toLowerCase();
+          const cls = (el.className || "").toString().toLowerCase();
+          if (styleAttr.includes("cyan") || styleAttr.includes("0ff") || cls.includes("cyan")) {
+            if (bits > minBits) {
+              el.style.color = "#ff4d4f";
+            } else if (bits === minBits) {
+              el.style.color = "";
+            }
+          }
+        });
+
+        tbody.appendChild(tr);
+      });
+    });
+  }
+
+  function syncAgent() {
+    const textarea = document.querySelector("textarea");
+    const text = textarea ? textarea.value : "";
+    let statusBox = document.getElementById("dwle-live-agent-status");
+    if (!statusBox && textarea && textarea.parentElement) {
+      statusBox = document.createElement("div");
+      statusBox.id = "dwle-live-agent-status";
+      statusBox.className = "dwle-agent-banner";
+      textarea.parentElement.insertBefore(statusBox, textarea.nextSibling);
+    }
+    if (statusBox && window.DWLEAutoAgent && text.trim().length > 0) {
+      const res = window.DWLEAutoAgent.selectBest(text);
+      statusBox.innerHTML =
+        "<strong>Auto Agent:</strong> " + res.selectedMethod +
+        " | <strong>Est:</strong> " + res.estimatedBits + "b" +
+        " | <strong>Lossless:</strong> " + (res.decoded === text ? "OK" : "CHECK");
+    }
+    applyDynamicRankingAndColors();
+  }
+
+  const observer = new MutationObserver(() => {
+    clearTimeout(window.__dwleSyncTimer);
+    window.__dwleSyncTimer = setTimeout(syncAgent, 60);
+  });
+
+  window.addEventListener("DOMContentLoaded", () => {
+    syncAgent();
+    observer.observe(document.body, { childList: true, subtree: true });
+  });
+  document.addEventListener("input", () => setTimeout(syncAgent, 50));
+  document.addEventListener("click", () => setTimeout(syncAgent, 120));
+})();
+</script>
+
 </body>
 </html>
 
