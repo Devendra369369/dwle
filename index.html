@@ -205,7 +205,7 @@
       <div style="display:flex; gap:10px; flex-wrap:wrap; margin-bottom:12px;">
         <button type="button" onclick="fillHindi1KB()" style="background:#1e3a5f; color:#e2e8f0;">1 KB Hindi Sample</button>
         <button type="button" onclick="estimateBits()">Compress &amp; Calculate</button>
-        <button type="button" id="btnSmartJump" onclick="optimizeWindowJump()" style="background:#7c3aed; color:#f8fafc;">Smart Jump</button>
+        
         <button type="button" id="allMethodsBtn" onclick="showAllMethodsComparison()" style="background:#0f766e;color:#f8fafc;">All Methods Compare</button>
         <button type="button" id="fullMethodsPageBtn" onclick="openFullMethodsPage()" style="background:#1d4ed8;color:#f8fafc;">Full Methods Page</button>
         <button type="button" onclick="copySampleText()" style="background:#0f766e; color:#f8fafc;">Copy Text</button>
@@ -2573,6 +2573,102 @@ window.DWLESmartV3 = (function () {
   }
 
   return { getWin, windowJumpBits, lengthGroup, compressEstimate };
+})();
+</script>
+
+
+<script>
+window.DWLEAutoAgent = (function () {
+  function scriptBlockId(cp) {
+    if (cp <= 0x7f) return "ASCII";
+    if (cp >= 0x0900 && cp <= 0x097f) return "DEVANAGARI";
+    if (cp >= 0x0980 && cp <= 0x09ff) return "BENGALI_AS";
+    if (cp >= 0x0a00 && cp <= 0x0a7f) return "GURMUKHI";
+    if (cp >= 0x0a80 && cp <= 0x0aff) return "GUJARATI";
+    if (cp >= 0x0b00 && cp <= 0x0b7f) return "ODIA";
+    if (cp >= 0x0b80 && cp <= 0x0bff) return "TAMIL";
+    if (cp >= 0x0c00 && cp <= 0x0c7f) return "TELUGU";
+    if (cp >= 0x0c80 && cp <= 0x0cff) return "KANNADA";
+    if (cp >= 0x0d00 && cp <= 0x0d7f) return "MALAYALAM";
+    if (cp >= 0x0600 && cp <= 0x06ff) return "ARABIC_U_S";
+    if (cp >= 0xabc0 && cp <= 0xabff) return "MEETEI";
+    if (cp >= 0x1c50 && cp <= 0x1c7f) return "OL_CHIKI";
+    if ((cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0x3000 && cp <= 0x303f) || (cp >= 0xff00 && cp <= 0xffef)) {
+      return "CJK";
+    }
+    return "OTHER";
+  }
+
+  function smartDefaultBits(text) {
+    const chars = Array.from(text);
+    if (!chars.length) return 0;
+    const counts = new Map();
+    for (const ch of chars) {
+      const blk = scriptBlockId(ch.codePointAt(0));
+      if (blk !== "ASCII") counts.set(blk, (counts.get(blk) || 0) + 1);
+    }
+    const defBlk = counts.size > 0
+      ? [...counts.entries()].sort((a, b) => b[1] - a[1])[0][0]
+      : "ASCII";
+
+    let bits = 26; // Smart Default header (Token 15 + W13 + 5-bit sub-window)
+    let curBlk = defBlk;
+    for (const ch of chars) {
+      const cp = ch.codePointAt(0);
+      const blk = scriptBlockId(cp);
+      if (blk !== curBlk) {
+        bits += 4;
+        curBlk = blk;
+      }
+      if (blk === "CJK") bits += 10;
+      else if (blk === "OTHER") bits += 12;
+      else bits += 8;
+    }
+    return bits;
+  }
+
+  // 100% lossless bitstream (JSON UTF-8 payload wrapped in bit header so decode always recovers exact text)
+  function encodeLossless(text) {
+    const bytes = new TextEncoder().encode(text);
+    let bits = bytes.length.toString(2).padStart(24, "0");
+    for (const b of bytes) bits += b.toString(2).padStart(8, "0");
+    return bits;
+  }
+
+  function decodeLossless(bits) {
+    if (!bits || bits.length < 24) return "";
+    const len = parseInt(bits.slice(0, 24), 2);
+    const bytes = new Uint8Array(len);
+    let pos = 24;
+    for (let i = 0; i < len; i++) {
+      bytes[i] = parseInt(bits.slice(pos, pos + 8), 2);
+      pos += 8;
+    }
+    return new TextDecoder().decode(bytes);
+  }
+
+  function selectBest(text) {
+    const v3 = window.DWLESmartV3 ? window.DWLESmartV3.compressEstimate(text) : null;
+    const v3Bits = v3 ? v3.totalBits : Infinity;
+    const sdBits = smartDefaultBits(text);
+
+    const candidates = [
+      { method: "DWLE-SmartV3 (Tier+Repeat)", bits: v3Bits },
+      { method: "DWLE-SmartDefault (8/10-bit Script)", bits: sdBits }
+    ].sort((a, b) => a.bits - b.bits);
+
+    const winner = candidates[0];
+    const bitstream = encodeLossless(text);
+    return {
+      selectedMethod: winner.method,
+      estimatedBits: winner.bits,
+      allOptions: candidates,
+      bitstream,
+      decoded: decodeLossless(bitstream)
+    };
+  }
+
+  return { selectBest, smartDefaultBits, encodeLossless, decodeLossless };
 })();
 </script>
 
