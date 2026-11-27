@@ -234,6 +234,20 @@ W8 (8-bit):  [00001011 = A]</pre>
   </div>
 
   
+<style id="dwle-agent-rank-styles">
+  .dwle-bit-red { color: #ff4d4f !important; font-weight: 700; }
+  .dwle-bit-green { color: #22c55e !important; font-weight: 700; }
+  .dwle-bit-default { color: inherit !important; }
+  .dwle-agent-banner {
+    margin: 8px 0;
+    padding: 8px 12px;
+    border-radius: 8px;
+    border: 1px solid rgba(56, 189, 148, 0.35);
+    background: rgba(15, 23, 42, 0.78);
+    font-size: 13px;
+  }
+</style>
+
 <script id="dwle-auto-agent-core">
 window.DWLEAutoAgent = (function () {
   const BLOCKS = [
@@ -262,35 +276,33 @@ window.DWLEAutoAgent = (function () {
     return BLOCKS.length - 1;
   }
 
-  function toBits(n, w) {
+  function pad(n, w) {
     return (n >>> 0).toString(2).padStart(w, "0");
   }
 
-  // Real 100% lossless compact window bitstream:
-  // Header: 16-bit char count + 4-bit initial block index
-  // Per char: '0' + (cp - block.base) in block.width bits  OR  '1' + 4-bit new block + 21-bit exact codepoint
+  // Compact Window Stream (100% lossless)
   function encodeCompactLossless(text) {
     const chars = Array.from(text);
-    if (!chars.length) return toBits(0, 16);
+    if (!chars.length) return pad(0, 16);
 
     const firstCp = chars[0].codePointAt(0);
     let curIdx = detectBlockIndex(firstCp);
-    let bits = toBits(chars.length, 16) + toBits(curIdx, 4);
+    let bits = pad(chars.length, 16) + pad(curIdx, 4);
 
     for (const ch of chars) {
       const cp = ch.codePointAt(0);
       const blk = BLOCKS[curIdx];
       if (cp >= blk.base && cp <= blk.max && (cp - blk.base) < (1 << blk.width)) {
-        bits += "0" + toBits(cp - blk.base, blk.width);
+        bits += "0" + pad(cp - blk.base, blk.width);
       } else {
         const nextIdx = detectBlockIndex(cp);
         const nextBlk = BLOCKS[nextIdx];
         if (cp >= nextBlk.base && cp <= nextBlk.max && (cp - nextBlk.base) < (1 << nextBlk.width)) {
           curIdx = nextIdx;
-          bits += "1" + toBits(curIdx, 4) + toBits(cp - nextBlk.base, nextBlk.width);
+          bits += "1" + pad(curIdx, 4) + pad(cp - nextBlk.base, nextBlk.width);
         } else {
           curIdx = BLOCKS.length - 1;
-          bits += "1" + toBits(curIdx, 4) + toBits(cp, 21);
+          bits += "1" + pad(curIdx, 4) + pad(cp, 21);
         }
       }
     }
@@ -329,6 +341,100 @@ window.DWLEAutoAgent = (function () {
       }
     }
     return out;
+  }
+
+  // Continuous Window + Backref (len >= 5 -> '11' + 12-bit offset + 6-bit len-5)
+  function encodeContHybrid(text) {
+    const chars = Array.from(text);
+    if (!chars.length) return { bits: pad(0, 20), matches: 0 };
+
+    let curIdx = detectBlockIndex(chars[0].codePointAt(0));
+    let bits = pad(chars.length, 20) + pad(curIdx, 4);
+    let i = 0;
+    let matches = 0;
+
+    while (i < chars.length) {
+      let bestLen = 0;
+      let bestOff = 0;
+      const maxOff = Math.min(i, 4095);
+      const maxLen = Math.min(chars.length - i, 68);
+
+      for (let off = 1; off <= maxOff; off++) {
+        let l = 0;
+        while (l < maxLen && chars[i - off + l] === chars[i + l]) l++;
+        if (l > bestLen) {
+          bestLen = l;
+          bestOff = off;
+          if (bestLen === maxLen) break;
+        }
+      }
+
+      if (bestLen >= 5) {
+        bits += "11" + pad(bestOff, 12) + pad(bestLen - 5, 6);
+        i += bestLen;
+        matches++;
+      } else {
+        const cp = chars[i].codePointAt(0);
+        const blk = BLOCKS[curIdx];
+        if (cp >= blk.base && cp <= blk.max && (cp - blk.base) < (1 << blk.width)) {
+          bits += "0" + pad(cp - blk.base, blk.width);
+        } else {
+          const nextIdx = detectBlockIndex(cp);
+          const nextBlk = BLOCKS[nextIdx];
+          curIdx = nextIdx;
+          if (cp >= nextBlk.base && cp <= nextBlk.max && (cp - nextBlk.base) < (1 << nextBlk.width)) {
+            bits += "10" + pad(curIdx, 4) + pad(cp - nextBlk.base, nextBlk.width);
+          } else {
+            curIdx = BLOCKS.length - 1;
+            bits += "10" + pad(curIdx, 4) + pad(cp, 21);
+          }
+        }
+        i++;
+      }
+    }
+    return { bits, matches };
+  }
+
+  function decodeContHybrid(bits) {
+    const totalChars = parseInt(bits.slice(0, 20), 2);
+    if (!totalChars) return "";
+    let pos = 20;
+    let curIdx = parseInt(bits.slice(pos, pos + 4), 2);
+    pos += 4;
+    const out = [];
+
+    while (out.length < totalChars && pos < bits.length) {
+      if (bits[pos] === "0") {
+        pos += 1;
+        const blk = BLOCKS[curIdx];
+        const off = parseInt(bits.slice(pos, pos + blk.width), 2);
+        pos += blk.width;
+        out.push(String.fromCodePoint(blk.base + off));
+      } else if (bits.slice(pos, pos + 2) === "10") {
+        pos += 2;
+        curIdx = parseInt(bits.slice(pos, pos + 4), 2);
+        pos += 4;
+        const blk = BLOCKS[curIdx];
+        if (blk.id === "UNI_21") {
+          const cp = parseInt(bits.slice(pos, pos + 21), 2);
+          pos += 21;
+          out.push(String.fromCodePoint(cp));
+        } else {
+          const off = parseInt(bits.slice(pos, pos + blk.width), 2);
+          pos += blk.width;
+          out.push(String.fromCodePoint(blk.base + off));
+        }
+      } else {
+        pos += 2;
+        const off = parseInt(bits.slice(pos, pos + 12), 2);
+        pos += 12;
+        const len = parseInt(bits.slice(pos, pos + 6), 2) + 5;
+        pos += 6;
+        const start = out.length - off;
+        for (let k = 0; k < len; k++) out.push(out[start + k]);
+      }
+    }
+    return out.join("");
   }
 
   function smartDefaultWindowBits(text) {
@@ -372,13 +478,17 @@ window.DWLEAutoAgent = (function () {
     const sdPlusTokensBits = Math.max(0, sdWinBits - tokenPhraseSaved);
 
     const compactStream = encodeCompactLossless(text);
-    const decoded = decodeCompactLossless(compactStream);
+    const contHybrid = encodeContHybrid(text);
+    const useCont = contHybrid.bits.length < compactStream.length;
+    const activeStream = useCont ? contHybrid.bits : compactStream;
+    const decoded = useCont ? decodeContHybrid(activeStream) : decodeCompactLossless(activeStream);
 
     const candidates = [
+      { id: "cont_hybrid", method: "DWLE-ContHybrid (Window+Backref)", bits: contHybrid.bits.length },
+      { id: "compact", method: "Compact Window Stream (Lossless)", bits: compactStream.length },
       { id: "v3", method: "DWLE-SmartV3 (Tier+Repeat)", bits: v3Bits },
       { id: "sd", method: "DWLE-SmartDefault (W13+5)", bits: sdWinBits },
-      { id: "sd_v3", method: "SmartDefault + V3 Tokens", bits: sdPlusTokensBits },
-      { id: "compact", method: "Compact Window Stream (Lossless)", bits: compactStream.length }
+      { id: "sd_v3", method: "SmartDefault + V3 Tokens", bits: sdPlusTokensBits }
     ].sort((a, b) => a.bits - b.bits);
 
     const winner = candidates[0];
@@ -393,7 +503,8 @@ window.DWLEAutoAgent = (function () {
       savedPct: Number(savedPct),
       allOptions: candidates,
       v3Breakdown: v3,
-      bitstream: compactStream,
+      matches5Plus: contHybrid.matches,
+      bitstream: activeStream,
       decoded
     };
   }
@@ -402,25 +513,16 @@ window.DWLEAutoAgent = (function () {
     selectBest: evaluateAll,
     evaluateAll,
     smartDefaultWindowBits,
-    encodeLossless: encodeCompactLossless,
-    decodeLossless: decodeCompactLossless
+    encodeCompactLossless,
+    decodeCompactLossless,
+    encodeContHybrid,
+    decodeContHybrid,
+    encodeLossless: (txt) => encodeContHybrid(txt).bits,
+    decodeLossless: decodeContHybrid
   };
 })();
 </script>
 
-<style id="dwle-agent-rank-styles">
-  .dwle-bit-red { color: #ff4d4f !important; font-weight: 700; }
-  .dwle-bit-green { color: #22c55e !important; font-weight: 700; }
-  .dwle-bit-default { color: inherit !important; }
-  .dwle-agent-banner {
-    margin: 8px 0;
-    padding: 8px 12px;
-    border-radius: 8px;
-    border: 1px solid rgba(56, 189, 148, 0.35);
-    background: rgba(15, 23, 42, 0.78);
-    font-size: 13px;
-  }
-</style>
 <script id="dwle-agent-rank-sync">
 (function () {
   function parseBits(text) {
