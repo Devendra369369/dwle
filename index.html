@@ -2918,29 +2918,7 @@ window.DWLEContHybrid = (function () {
     if (tds[3]) tds[3].textContent = contBits + "b";
     if (tds[4]) tds[4].textContent = savedPct + "%";
     if (tds[5]) tds[5].textContent = resultText;
-
-    if (window.DWLERuleStream) {
-      const rs = window.DWLERuleStream.encodeRuleStream(text);
-      const rsBits = rs.bits.length;
-      const rsSaved = utf8Bits - rsBits;
-      const rsPct = utf8Bits > 0 ? ((rsSaved / utf8Bits) * 100).toFixed(1) : "0.0";
-      let rsRow = tbody.querySelector("tr[data-dwle-rule-stream='1']");
-      if (!rsRow) {
-        rsRow = document.createElement("tr");
-        rsRow.setAttribute("data-dwle-rule-stream", "1");
-        for (let c = 0; c < colCount; c++) rsRow.appendChild(document.createElement("td"));
-        tbody.appendChild(rsRow);
-      }
-      const rtds = Array.from(rsRow.children);
-      if (rtds[0]) rtds[0].textContent = "-";
-      if (rtds[1]) rtds[1].textContent = "DWLE-RuleStream (8b+EndTok)";
-      if (rtds[2]) rtds[2].textContent = "Rule / 4-Bit Frame";
-      if (rtds[3]) rtds[3].textContent = rsBits + "b";
-      if (rtds[4]) rtds[4].textContent = rsPct + "%";
-      if (rtds[5]) rtds[5].textContent = rsSaved >= 0
-        ? "RuleStream beats UTF-8 by " + rsSaved + "b"
-        : "UTF-8 beats by " + Math.abs(rsSaved) + "b";
-    }
+  }
 
   function processFullMethodsTable(table) {
     if (!isFullMethodsTable(table)) return;
@@ -3051,145 +3029,81 @@ window.DWLEContHybrid = (function () {
 })();
 </script>
 
-
-<script id="dwle-rule-stream-core">
-window.DWLERuleStream = (function () {
-  const END_TOKEN_BITS = "01000011011"; // [0] + ModeA(10) + (1-10 -> 0001) + (11-15 -> 1011)
-
-  const BLOCKS = [
-    { id: "ASCII",      width: 8,  base: 0x0000, max: 0x007f },
-    { id: "DEVANAGARI", width: 9,  base: 0x0900, max: 0x097f },
-    { id: "BENGALI_AS", width: 9,  base: 0x0980, max: 0x09ff },
-    { id: "GURMUKHI",   width: 9,  base: 0x0a00, max: 0x0a7f },
-    { id: "GUJARATI",   width: 9,  base: 0x0a80, max: 0x0aff },
-    { id: "ODIA",       width: 9,  base: 0x0b00, max: 0x0b7f },
-    { id: "TAMIL",      width: 9,  base: 0x0b80, max: 0x0bff },
-    { id: "TELUGU",     width: 9,  base: 0x0c00, max: 0x0c7f },
-    { id: "KANNADA",    width: 9,  base: 0x0c80, max: 0x0cff },
-    { id: "MALAYALAM",  width: 9,  base: 0x0d00, max: 0x0d7f },
-    { id: "ARABIC_U_S", width: 9,  base: 0x0600, max: 0x06ff },
-    { id: "MEETEI",     width: 9,  base: 0xabc0, max: 0xabff },
-    { id: "OL_CHIKI",   width: 8,  base: 0x1c50, max: 0x1c7f },
-    { id: "CJK_MAIN",   width: 17, base: 0x4e00, max: 0x9fff },
-    { id: "UNI_21",     width: 21, base: 0x000000, max: 0x10ffff }
-  ];
-
-  function b(num, len) {
-    return (num >>> 0).toString(2).padStart(len, "0");
-  }
-
-  function detectBlock(cp) {
-    for (let i = 0; i < BLOCKS.length - 1; i++) {
-      if (cp >= BLOCKS[i].base && cp <= BLOCKS[i].max) return i;
-    }
-    return BLOCKS.length - 1;
-  }
-
-  function encodeRuleStream(text) {
-    const chars = Array.from(text || "");
-    if (!chars.length) {
-      return { bits: b(8, 8) + b(0, 20) + END_TOKEN_BITS, matches: 0 };
-    }
-
-    let curIdx = detectBlock(chars[0].codePointAt(0));
-    const activeWinWidth = BLOCKS[curIdx].width;
-    let bits = b(activeWinWidth, 8) + b(chars.length, 20) + b(curIdx, 4);
-    let i = 0;
-    let matches = 0;
-
-    while (i < chars.length) {
-      let bestLen = 0;
-      let bestOff = 0;
-      const maxOff = Math.min(i, 4095);
-      const maxLen = Math.min(chars.length - i, 68);
-
-      for (let off = 1; off <= maxOff; off++) {
-        let l = 0;
-        while (l < maxLen && chars[i - off + l] === chars[i + l]) l++;
-        if (l > bestLen) {
-          bestLen = l;
-          bestOff = off;
-          if (bestLen === maxLen) break;
-        }
-      }
-
-      if (bestLen >= 5) {
-        bits += "11" + b(bestOff, 12) + b(bestLen - 5, 6);
-        i += bestLen;
-        matches++;
-      } else {
-        const cp = chars[i].codePointAt(0);
-        const blk = BLOCKS[curIdx];
-        if (cp >= blk.base && cp <= blk.max && (cp - blk.base) < (1 << blk.width)) {
-          bits += "0" + b(cp - blk.base, blk.width);
-        } else {
-          const nextIdx = detectBlock(cp);
-          const nextBlk = BLOCKS[nextIdx];
-          curIdx = nextIdx;
-          if (cp >= nextBlk.base && cp <= nextBlk.max && (cp - nextBlk.base) < (1 << nextBlk.width)) {
-            bits += "10" + b(curIdx, 4) + b(cp - nextBlk.base, nextBlk.width);
-          } else {
-            curIdx = BLOCKS.length - 1;
-            bits += "10" + b(curIdx, 4) + b(cp, 21);
-          }
-        }
-        i++;
-      }
-    }
-
-    bits += END_TOKEN_BITS;
-    return { bits, matches };
-  }
-
-  function decodeRuleStream(bits) {
-    if (!bits || bits.length < 28 + END_TOKEN_BITS.length) return "";
-    const totalChars = parseInt(bits.slice(8, 28), 2);
-    if (!totalChars) return "";
-
-    let pos = 28;
-    let curIdx = parseInt(bits.slice(pos, pos + 4), 2);
-    pos += 4;
-    const out = [];
-
-    while (out.length < totalChars && pos < bits.length - END_TOKEN_BITS.length) {
-      if (bits[pos] === "0") {
-        pos += 1;
-        const blk = BLOCKS[curIdx];
-        const off = parseInt(bits.slice(pos, pos + blk.width), 2);
-        pos += blk.width;
-        out.push(String.fromCodePoint(blk.base + off));
-      } else if (bits.slice(pos, pos + 2) === "10") {
-        pos += 2;
-        curIdx = parseInt(bits.slice(pos, pos + 4), 2);
-        pos += 4;
-        const blk = BLOCKS[curIdx];
-        if (blk.id === "UNI_21") {
-          const cp = parseInt(bits.slice(pos, pos + 21), 2);
-          pos += 21;
-          out.push(String.fromCodePoint(cp));
-        } else {
-          const off = parseInt(bits.slice(pos, pos + blk.width), 2);
-          pos += blk.width;
-          out.push(String.fromCodePoint(blk.base + off));
-        }
-      } else {
-        pos += 2;
-        const off = parseInt(bits.slice(pos, pos + 12), 2);
-        pos += 12;
-        const len = parseInt(bits.slice(pos, pos + 6), 2) + 5;
-        pos += 6;
-        const start = out.length - off;
-        for (let k = 0; k < len; k++) out.push(out[start + k]);
-      }
-    }
-
-    return out.join("");
-  }
-
-  return { encodeRuleStream, decodeRuleStream };
-})();
-</script>
-
 </body>
 </html>
 
+<script id="dwle-rule-stream-core">
+window.DWLERuleStream = (function () {
+  const END_BITS = "01000011011";
+  const W = [
+    { w: 8, b: 0x00, m: 0x7f }, { w: 9, b: 0x0900, m: 0x097f },
+    { w: 9, b: 0x0980, m: 0x09ff }, { w: 9, b: 0x0a00, m: 0x0a7f },
+    { w: 9, b: 0x0a80, m: 0x0aff }, { w: 9, b: 0x0b00, m: 0x0b7f },
+    { w: 9, b: 0x0b80, m: 0x0bff }, { w: 9, b: 0x0c00, m: 0x0c7f },
+    { w: 9, b: 0x0c80, m: 0x0cff }, { w: 9, b: 0x0d00, m: 0x0d7f },
+    { w: 9, b: 0x0600, m: 0x06ff }, { w: 9, b: 0xabc0, m: 0xabff },
+    { w: 8, b: 0x1c50, m: 0x1c7f }, { w: 17, b: 0x4e00, m: 0x9fff },
+    { w: 21, b: 0, m: 0x10ffff }
+  ];
+  const pad = (n, l) => (n >>> 0).toString(2).padStart(l, "0");
+  const det = cp => { const i = W.findIndex((x, k) => k < W.length - 1 && cp >= x.b && cp <= x.m); return i === -1 ? W.length - 1 : i; };
+  function encodeRuleStream(t) {
+    const ch = Array.from(t || "");
+    if (!ch.length) return { bits: pad(8, 8) + pad(0, 20) + END_BITS, matches: 0 };
+    let idx = det(ch[0].codePointAt(0)), out = pad(W[idx].w, 8) + pad(ch.length, 20) + pad(idx, 4), i = 0, matches = 0;
+    while (i < ch.length) {
+      let bl = 0, bo = 0;
+      for (let o = 1; o <= Math.min(i, 4095); o++) {
+        let l = 0;
+        while (l < Math.min(ch.length - i, 68) && ch[i - o + l] === ch[i + l]) l++;
+        if (l > bl) { bl = l; bo = o; if (bl === 68) break; }
+      }
+      if (bl >= 5) { out += "11" + pad(bo, 12) + pad(bl - 5, 6); i += bl; matches++; }
+      else {
+        const cp = ch[i].codePointAt(0), blk = W[idx];
+        if (cp >= blk.b && cp <= blk.m && (cp - blk.b) < (1 << blk.w)) out += "0" + pad(cp - blk.b, blk.w);
+        else { idx = det(cp); const nb = W[idx]; out += "10" + pad(idx, 4) + pad(nb.w === 21 ? cp : cp - nb.b, nb.w); }
+        i++;
+      }
+    }
+    return { bits: out + END_BITS, matches };
+  }
+  function decodeRuleStream(bits) {
+    if (!bits || bits.length < 28 + END_BITS.length) return "";
+    const n = parseInt(bits.slice(8, 28), 2); if (!n) return "";
+    let p = 28, idx = parseInt(bits.slice(p, p + 4), 2); p += 4; const r = [];
+    while (r.length < n && p < bits.length - END_BITS.length) {
+      if (bits[p] === "0") { p++; const b = W[idx]; r.push(String.fromCodePoint(b.b + parseInt(bits.slice(p, p + b.w), 2))); p += b.w; }
+      else if (bits.slice(p, p + 2) === "10") { p += 2; idx = parseInt(bits.slice(p, p + 4), 2); p += 4; const b = W[idx]; r.push(String.fromCodePoint((b.w === 21 ? 0 : b.b) + parseInt(bits.slice(p, p + b.w), 2))); p += b.w; }
+      else { p += 2; const o = parseInt(bits.slice(p, p + 12), 2); p += 12; const l = parseInt(bits.slice(p, p + 6), 2) + 5; p += 6; for (let k = 0; k < l; k++) r.push(r[r.length - o]); }
+    }
+    return r.join("");
+  }
+  return { encodeRuleStream, decodeRuleStream };
+})();
+</script>
+<script id="dwle-rule-stream-row">
+(function () {
+  function syncRow() {
+    if (!window.DWLERuleStream) return;
+    const inp = Array.from(document.querySelectorAll("textarea, input[type='text']")).find(el => el.value && el.value.trim());
+    const text = inp ? inp.value : "";
+    document.querySelectorAll("table").forEach(tbl => {
+      if (!/saved vs utf-8/i.test(tbl.textContent || "") || !/dwle result/i.test(tbl.textContent || "")) return;
+      const tb = tbl.tBodies[0] || tbl;
+      let r = tb.querySelector("tr[data-dwle-rule-stream='1']");
+      if (!text) { if (r) r.remove(); return; }
+      const u8 = new TextEncoder().encode(text).length * 8;
+      const bits = window.DWLERuleStream.encodeRuleStream(text).bits.length;
+      const diff = u8 - bits;
+      const pct = u8 > 0 ? ((diff / u8) * 100).toFixed(1) : "0.0";
+      if (!r) { r = document.createElement("tr"); r.setAttribute("data-dwle-rule-stream", "1"); for (let i = 0; i < 6; i++) r.appendChild(document.createElement("td")); tb.appendChild(r); }
+      const c = r.children;
+      c[0].textContent = "-"; c[1].textContent = "DWLE-RuleStream (8b+EndTok)"; c[2].textContent = "Rule / 4-Bit Frame";
+      c[3].textContent = bits + "b"; c[4].textContent = pct + "%";
+      c[5].textContent = diff >= 0 ? "RuleStream beats UTF-8 by " + diff + "b" : "UTF-8 beats by " + Math.abs(diff) + "b";
+    });
+  }
+  setInterval(syncRow, 400);
+})();
+</script>
