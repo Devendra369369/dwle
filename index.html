@@ -531,16 +531,14 @@ W8 (8-bit):  [00001011 = A]</pre>
     }
 
     function buildControlSequence(targetNum, w) {
-      if (window.DWLERuleStream) {
-        const h = (Number(w)||8).toString(2).padStart(8,"0");
-        const endTok = (window.DWLERuleStream.END_BITS || "01000011011");
-        const n = Number(targetNum) || 0;
-        const modeBits = n <= 10 ? "10" : "110";
-        const numBits = n.toString(2);
-        const ruleBits = h + "0" + modeBits + numBits + endTok;
-        return [{ bits: ruleBits, val: n, desc: "RuleStream(8b+0+" + modeBits + "+" + n + "+EndTok)->W" + n }];
-      }
-      return [];
+      const n = Number(targetNum) || 0;
+      const stepVal = Math.max(1, n - 1);
+      const stepBits = stepVal.toString(2).padStart(4, "0");
+      return [
+        { bits: "10", val: 2, desc: "modeA" },
+        { bits: stepBits, val: stepVal, desc: stepVal + "-" + "1" + "=" + Math.max(0, stepVal - 1) },
+        { bits: "1011", val: 11, desc: "11-10=1=0 modeA se" }
+      ];
     }
     function buildCompressNumberTokens(num, w) {
       const charStart = getWindowCharStart(w);
@@ -670,7 +668,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           } else {
             emitToken(0, curW, `${curW}null(WinTrig)`, `null:WinTrig`);
             for (const item of buildControlSequence(targetW, curW)) {
-              emitToken(item.val, curW, `${item.desc}->W${targetW}`, `W${targetW}`);
+              emitToken(item.val, curW, `${item.desc}`, `W${targetW}`);
             }
             flowLines.push(`Switch W${curW} -> W${targetW} at ${idxLabel} [${ch}]`);
             curW = targetW; curL = 1;
@@ -1743,7 +1741,7 @@ W8 (8-bit):  [00001011 = A]</pre>
           const seq = buildControlSequence(targetW, curW);
           for (const item of seq) {
             for (const c of item.bits) bits.push(Number(c));
-            readLines.push(`${item.bits}=${item.desc}->W${targetW}`);
+            readLines.push(`${item.bits}=${item.desc}`);
             tokenSegments.push({ bits: item.bits, label: `W${targetW}` });
           }
           curW = targetW;
