@@ -536,10 +536,14 @@ W8 (8-bit):  [00001011 = A]</pre>
       const modeBMap = { 5: 11, 6: 12, 7: 13, 8: 14, 9: 15 };
       if (lastDigit >= 5 && lastDigit <= 9) {
         const mapped = modeBMap[lastDigit];
-        return [
-          { bits: "110", val: 110, desc: "modeB" },
-          { bits: mapped.toString(2).padStart(4, "0"), val: mapped, desc: mapped + "(d:" + lastDigit + ")" }
-        ];
+        const out = [{ bits: "110", val: 110, desc: "modeB" }];
+        if (n > 10) {
+          const lead = Math.floor(n / 10);
+          const leadStep = Math.max(1, lead + 1);
+          out.push({ bits: leadStep.toString(2).padStart(4, "0"), val: leadStep, desc: leadStep + "-1=" + lead });
+        }
+        out.push({ bits: mapped.toString(2).padStart(4, "0"), val: mapped, desc: mapped + "(exit->W" + n + ")" });
+        return out;
       }
       const stepVal = Math.max(1, n - 1);
       const stepBits = (stepVal % 16).toString(2).padStart(4, "0");
